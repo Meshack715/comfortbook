@@ -4,11 +4,13 @@ require_once __DIR__ . '/../includes/config.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_login();
 
-$isAdmin = is_admin();
-$gender  = gender_filter();
-$flash   = $_SESSION['flash'] ?? null;
+$isAdmin   = is_admin();
+$gender    = gender_filter();
+$flash     = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
+$activeSid = active_semester_id();
 
+// ---------- DELETE (admin only) ----------
 if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delete') {
     $id = (int)($_POST['id'] ?? 0);
     if ($id > 0) {
@@ -25,40 +27,67 @@ if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? ''
     redirect(APP_BASE . '/user/rooms.php');
 }
 
+// ---------- FILTERS ----------
 $filterBlock  = (int)($_GET['block_id'] ?? 0);
-$filterStatus = $_GET['status'] ?? '';
 $search       = trim($_GET['q'] ?? '');
 
 $where = ' WHERE 1=1'; $params = [];
 if ($gender !== null) { $where .= ' AND r.gender = ?'; $params[] = $gender; }
 if ($filterBlock > 0) { $where .= ' AND r.block_id = ?'; $params[] = $filterBlock; }
-if (in_array($filterStatus, ['vacant','available_p2','reserved','occupied'], true)) { $where .= ' AND r.status = ?'; $params[] = $filterStatus; }
 if ($search !== '') { $where .= ' AND (r.room_number LIKE ? OR b.name LIKE ?)'; $params[] = "%$search%"; $params[] = "%$search%"; }
 
+// Occupancy per room FOR THE ACTIVE SEMESTER
+$occSub = $activeSid
+    ? "(SELECT COUNT(*) FROM bookings b2 WHERE b2.room_id = r.id AND b2.status='confirmed' AND b2.semester_id = $activeSid)"
+    : "0";
+
 $stmt = $pdo->prepare("
-    SELECT r.*, b.name block_name, b.gender block_gender
+    SELECT r.*, b.name block_name, b.gender block_gender,
+        $occSub AS semester_occupants
     FROM rooms r JOIN blocks b ON b.id = r.block_id
     $where ORDER BY b.gender, b.name, r.room_number LIMIT 500
 ");
 $stmt->execute($params);
 $rooms = $stmt->fetchAll();
 
+// Blocks for filter
 $bWhere = ' WHERE is_active = 1'; $bParams = [];
 if ($gender !== null) { $bWhere .= ' AND gender = ?'; $bParams[] = $gender; }
 $stmt = $pdo->prepare("SELECT id, name, gender FROM blocks $bWhere ORDER BY gender, name");
 $stmt->execute($bParams); $blocks = $stmt->fetchAll();
 
-$counts = ['vacant'=>0,'available_p2'=>0,'reserved'=>0,'occupied'=>0];
-foreach ($rooms as $r) if (isset($counts[$r['status']])) $counts[$r['status']]++;
+// ---------- FILTER BY SEMESTER STATUS ----------
+$filterStatus = $_GET['status'] ?? '';
+if ($activeSid && in_array($filterStatus, ['vacant','occupied','full','partial'], true)) {
+    $rooms = array_filter($rooms, function ($r) use ($filterStatus) {
+        $occ = (int)$r['semester_occupants'];
+        $cap = (int)$r['capacity'];
+        return match($filterStatus) {
+            'vacant'   => $occ === 0,
+            'partial'  => $occ > 0 && $occ < $cap,
+            'full'     => $occ >= $cap,
+            'occupied' => $occ > 0,
+            default    => true,
+        };
+    });
+}
 
-function status_badge(string $s): string {
-    return match($s) {
-        'vacant'       => '<span class="badge bg-success">Vacant</span>',
-        'available_p2' => '<span class="badge bg-info text-dark">Released</span>',
-        'reserved'     => '<span class="badge bg-warning text-dark">Reserved</span>',
-        'occupied'     => '<span class="badge bg-primary">Occupied</span>',
-        default        => '<span class="badge bg-light text-dark">' . h($s) . '</span>',
-    };
+// Summary counts (semester-aware)
+$counts = ['vacant'=>0, 'partial'=>0, 'full'=>0, 'occupied'=>0];
+foreach ($rooms as $r) {
+    $occ = (int)$r['semester_occupants'];
+    $cap = (int)$r['capacity'];
+    if ($occ === 0)                    $counts['vacant']++;
+    elseif ($occ >= $cap)              $counts['full']++;
+    else                               $counts['partial']++;
+    if ($occ > 0)                      $counts['occupied']++;
+}
+
+// Small helper
+function semester_status_badge(int $occ, int $cap): string {
+    if ($occ === 0) return '<span class="badge bg-success">Vacant</span>';
+    if ($occ >= $cap) return '<span class="badge bg-danger">Full</span>';
+    return '<span class="badge bg-warning text-dark">' . $occ . '/' . $cap . '</span>';
 }
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
@@ -70,7 +99,13 @@ function status_badge(string $s): string {
             <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-3">
                 <div>
                     <h4 class="mb-1"><i class="fas fa-bed text-primary me-2"></i>Rooms</h4>
-                    <p class="text-muted small mb-0"><?= count($rooms) ?> room<?= count($rooms)===1?'':'s' ?><?= $gender ? ' · '.h($gender).' wing' : ' · All wings' ?></p>
+                    <p class="text-muted small mb-0">
+                        <?= count($rooms) ?> room<?= count($rooms)===1?'':'s' ?>
+                        <?= $gender ? ' · '.h($gender).' wing' : ' · All wings' ?>
+                        <?php if ($activeSid): ?>
+                            · occupancy for <strong><?= h(active_semester()['name']) ?></strong>
+                        <?php endif; ?>
+                    </p>
                 </div>
                 <?php if ($isAdmin): ?>
                 <a href="room_form.php" class="btn btn-primary btn-sm"><i class="fas fa-plus-circle me-1"></i>Add Room</a>
@@ -84,32 +119,35 @@ function status_badge(string $s): string {
             <?php endif; ?>
 
             <div class="d-flex flex-wrap gap-2 mb-3">
-                <a href="rooms.php" class="btn btn-sm <?= $filterStatus===''?'btn-primary':'btn-outline-primary' ?>">All <span class="badge bg-light text-dark ms-1"><?= count($rooms) ?></span></a>
-                <a href="rooms.php?status=vacant" class="btn btn-sm <?= $filterStatus==='vacant'?'btn-success':'btn-outline-success' ?>">Vacant <span class="badge bg-light text-dark ms-1"><?= $counts['vacant'] ?></span></a>
-                <a href="rooms.php?status=available_p2" class="btn btn-sm <?= $filterStatus==='available_p2'?'btn-info':'btn-outline-info' ?>">Released <span class="badge bg-light text-dark ms-1"><?= $counts['available_p2'] ?></span></a>
-                <a href="rooms.php?status=reserved" class="btn btn-sm <?= $filterStatus==='reserved'?'btn-warning':'btn-outline-warning' ?>">Reserved <span class="badge bg-light text-dark ms-1"><?= $counts['reserved'] ?></span></a>
-                <a href="rooms.php?status=occupied" class="btn btn-sm <?= $filterStatus==='occupied'?'btn-primary':'btn-outline-primary' ?>">Occupied <span class="badge bg-light text-dark ms-1"><?= $counts['occupied'] ?></span></a>
+                <a href="rooms.php" class="btn btn-sm <?= $filterStatus===''?'btn-primary':'btn-outline-primary' ?>">
+                    All <span class="badge bg-light text-dark ms-1"><?= count($rooms) ?></span>
+                </a>
+                <a href="rooms.php?status=vacant" class="btn btn-sm <?= $filterStatus==='vacant'?'btn-success':'btn-outline-success' ?>">
+                    Vacant <span class="badge bg-light text-dark ms-1"><?= $counts['vacant'] ?></span>
+                </a>
+                <a href="rooms.php?status=partial" class="btn btn-sm <?= $filterStatus==='partial'?'btn-warning':'btn-outline-warning' ?>">
+                    Partial <span class="badge bg-light text-dark ms-1"><?= $counts['partial'] ?></span>
+                </a>
+                <a href="rooms.php?status=full" class="btn btn-sm <?= $filterStatus==='full'?'btn-danger':'btn-outline-danger' ?>">
+                    Full <span class="badge bg-light text-dark ms-1"><?= $counts['full'] ?></span>
+                </a>
+                <a href="rooms.php?status=occupied" class="btn btn-sm <?= $filterStatus==='occupied'?'btn-primary':'btn-outline-primary' ?>">
+                    Occupied <span class="badge bg-light text-dark ms-1"><?= $counts['occupied'] ?></span>
+                </a>
             </div>
 
             <div class="card border-0 shadow-sm mb-3"><div class="card-body">
                 <form method="get" class="row g-2 align-items-end">
-                    <div class="col-md-4"><label class="form-label small mb-1">Search</label>
+                    <div class="col-md-5"><label class="form-label small mb-1">Search</label>
                         <input type="text" name="q" class="form-control form-control-sm" value="<?= h($search) ?>" placeholder="Room or building"></div>
-                    <div class="col-md-3"><label class="form-label small mb-1">Building</label>
+                    <div class="col-md-4"><label class="form-label small mb-1">Building</label>
                         <select name="block_id" class="form-select form-select-sm">
                             <option value="0">All</option>
                             <?php foreach ($blocks as $b): ?>
                                 <option value="<?= (int)$b['id'] ?>" <?= $filterBlock===(int)$b['id']?'selected':'' ?>><?= h($b['name']) ?></option>
                             <?php endforeach; ?>
                         </select></div>
-                    <div class="col-md-3"><label class="form-label small mb-1">Status</label>
-                        <select name="status" class="form-select form-select-sm">
-                            <option value="">All</option>
-                            <?php foreach (['vacant','available_p2','reserved','occupied'] as $s): ?>
-                                <option value="<?= $s ?>" <?= $filterStatus===$s?'selected':'' ?>><?= ucfirst(str_replace('_',' ',$s)) ?></option>
-                            <?php endforeach; ?>
-                        </select></div>
-                    <div class="col-md-2 d-flex gap-2">
+                    <div class="col-md-3 d-flex gap-2">
                         <button class="btn btn-primary btn-sm flex-fill"><i class="fas fa-filter me-1"></i>Filter</button>
                         <a href="rooms.php" class="btn btn-outline-secondary btn-sm"><i class="fas fa-times"></i></a>
                     </div>
@@ -122,16 +160,40 @@ function status_badge(string $s): string {
                 <?php else: ?>
                     <div class="table-responsive">
                         <table class="table table-hover mb-0 align-middle">
-                            <thead class="table-light"><tr><th>Room</th><th>Building</th><th>Wing</th><th class="text-center">Cap</th><th>Status</th>
-                            <?php if ($isAdmin): ?><th class="text-end">Actions</th><?php endif; ?></tr></thead>
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Room</th>
+                                    <th>Building</th>
+                                    <th>Wing</th>
+                                    <th class="text-center">Capacity</th>
+                                    <th>Occupancy (this sem)</th>
+                                    <?php if ($isAdmin): ?><th class="text-end">Actions</th><?php endif; ?>
+                                </tr>
+                            </thead>
                             <tbody>
-                            <?php foreach ($rooms as $r): ?>
+                            <?php foreach ($rooms as $r):
+                                $occ = (int)$r['semester_occupants'];
+                                $cap = (int)$r['capacity'];
+                                $pct = $cap > 0 ? round(($occ / $cap) * 100) : 0;
+                                $barColor = $pct >= 100 ? 'danger' : ($pct > 0 ? 'warning' : 'success');
+                            ?>
                                 <tr>
                                     <td class="fw-semibold"><?= h($r['room_number']) ?></td>
                                     <td class="small"><?= h($r['block_name']) ?></td>
-                                    <td><?= $r['block_gender']==='Male'?'<span class="badge bg-primary"><i class="fas fa-mars"></i></span>':'<span class="badge bg-danger"><i class="fas fa-venus"></i></span>' ?></td>
-                                    <td class="text-center"><?= (int)$r['capacity'] ?></td>
-                                    <td><?= status_badge($r['status']) ?></td>
+                                    <td>
+                                        <?= $r['block_gender']==='Male'
+                                            ? '<span class="badge bg-primary"><i class="fas fa-mars"></i></span>'
+                                            : '<span class="badge bg-danger"><i class="fas fa-venus"></i></span>' ?>
+                                    </td>
+                                    <td class="text-center"><?= $cap ?></td>
+                                    <td>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <div class="progress flex-fill" style="height:6px;min-width:80px;">
+                                                <div class="progress-bar bg-<?= $barColor ?>" style="width:<?= $pct ?>%"></div>
+                                            </div>
+                                            <?= semester_status_badge($occ, $cap) ?>
+                                        </div>
+                                    </td>
                                     <?php if ($isAdmin): ?>
                                     <td class="text-end">
                                         <a href="room_form.php?id=<?= (int)$r['id'] ?>" class="btn btn-sm btn-outline-primary"><i class="fas fa-edit"></i></a>

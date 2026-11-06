@@ -21,7 +21,10 @@ if (!preg_match('/^[A-Z0-9]{10}$/', $ref)) {
     exit;
 }
 
-$stmt = $pdo->prepare("SELECT * FROM bookings WHERE id = ? AND student_id = ? AND status = 'pending_payment'");
+$stmt = $pdo->prepare("
+    SELECT * FROM bookings
+    WHERE id = ? AND student_id = ? AND status = 'pending_payment'
+");
 $stmt->execute([$bookingId, $sid]);
 $booking = $stmt->fetch();
 if (!$booking) {
@@ -29,16 +32,15 @@ if (!$booking) {
     exit;
 }
 
-// Duplicate check (unique key will also catch it)
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM bookings WHERE mpesa_ref = ? AND id <> ?");
 $stmt->execute([$ref, $bookingId]);
 if ((int)$stmt->fetchColumn() > 0) {
-    echo json_encode(['ok'=>false, 'error'=>'This M-Pesa reference has already been used.']);
+    echo json_encode(['ok'=>false, 'error'=>'This reference has already been used.']);
     exit;
 }
 
 $pdo->prepare("
-    UPDATE bookings SET mpesa_ref = ?, status='pending_approval' WHERE id = ?
+    UPDATE bookings SET mpesa_ref=?, status='pending_approval' WHERE id=?
 ")->execute([$ref, $bookingId]);
 
 audit_log(null, $sid, 'mpesa_submitted', "Ref $ref for booking #$bookingId");

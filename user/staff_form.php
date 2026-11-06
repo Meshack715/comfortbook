@@ -92,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             audit_log($_SESSION['user_id'], null, 'staff_add', "Added staff #$newId");
             $_SESSION['flash'] = ['type'=>'success','msg'=>'Staff account created.'];
         }
-        redirect(APP_BASE . '/user/staff.php');
+        redirect('staff.php');
     }
 }
 ?>

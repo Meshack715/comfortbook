@@ -5,9 +5,12 @@ require_once __DIR__ . '/../includes/auth.php';
 require_login();
 
 $isAdmin = is_admin();
-$gender  = gender_filter();
+$gender  = gender_filter();     // null for admin
 
-// ---------- counts for badges ----------
+// ---------- counts for badges (semester-aware) ----------
+$activeSid = active_semester_id();
+$activeSem = active_semester();
+
 function safe_count(PDO $pdo, string $sql, array $p = []): int {
     try { $s = $pdo->prepare($sql); $s->execute($p); return (int)$s->fetchColumn(); }
     catch (Throwable $e) { return 0; }
@@ -16,27 +19,36 @@ function safe_count(PDO $pdo, string $sql, array $p = []): int {
 $gS = $gender ? " AND gender = ?" : "";
 $gP = $gender ? [$gender] : [];
 
-$countStudents  = safe_count($pdo, "SELECT COUNT(*) FROM students WHERE is_active=1 $gS", $gP);
-$countRooms     = safe_count($pdo, "SELECT COUNT(*) FROM rooms WHERE 1=1" . ($gender ? " AND gender=?" : ""), $gP);
-$countBlocks    = safe_count($pdo, "SELECT COUNT(*) FROM blocks WHERE is_active=1" . ($gender ? " AND gender=?" : ""), $gP);
+$countStudents = safe_count($pdo, "SELECT COUNT(*) FROM students WHERE is_active=1 $gS", $gP);
+$countRooms    = safe_count($pdo, "SELECT COUNT(*) FROM rooms WHERE 1=1" . ($gender ? " AND gender=?" : ""), $gP);
+$countBlocks   = safe_count($pdo, "SELECT COUNT(*) FROM blocks WHERE is_active=1" . ($gender ? " AND gender=?" : ""), $gP);
+
+// Placed = confirmed in active semester
+$placedExpr = $activeSid
+    ? "EXISTS (SELECT 1 FROM bookings b WHERE b.student_id = s.id AND b.status='confirmed' AND b.semester_id = " . (int)$activeSid . ")"
+    : "s.placed = 1";
+$gStud = $gender ? " AND s.gender = ?" : "";
+$pStud = $gender ? [$gender] : [];
+
 $countConfirmed = safe_count($pdo,
-    "SELECT COUNT(*) FROM bookings b JOIN students s ON s.id=b.student_id WHERE b.status='confirmed'" .
-    ($gender ? " AND s.gender=?" : ""), $gP);
+    "SELECT COUNT(*) FROM students s WHERE s.is_active=1 AND $placedExpr $gStud", $pStud);
 $countUnplaced  = safe_count($pdo,
-    "SELECT COUNT(*) FROM students WHERE is_active=1 AND placed=0 $gS", $gP);
-$countStaff     = $isAdmin ? safe_count($pdo, "SELECT COUNT(*) FROM users") : 0;
+    "SELECT COUNT(*) FROM students s WHERE s.is_active=1 AND NOT ($placedExpr) $gStud", $pStud);
+
+$countStaff = $isAdmin ? safe_count($pdo, "SELECT COUNT(*) FROM users") : 0;
 
 // Occupancy %
-$rooms = $pdo->prepare("SELECT COUNT(*) total,
+$rq = $pdo->prepare("SELECT COUNT(*) total,
     SUM(CASE WHEN status='occupied' THEN 1 ELSE 0 END) occupied
     FROM rooms WHERE 1=1" . ($gender ? " AND gender=?" : ""));
-$rooms->execute($gP);
-$rs = $rooms->fetch() ?: ['total'=>0,'occupied'=>0];
+$rq->execute($gP);
+$rs = $rq->fetch() ?: ['total'=>0,'occupied'=>0];
 $occupancy_rate = (int)$rs['total'] > 0 ? round(($rs['occupied'] / $rs['total']) * 100, 1) : 0;
 
-// ---------- helper to render a card ----------
+// ---------- card renderer ----------
 function download_card(string $title, string $subtitle, string $icon, string $iconClass,
                        string $type, string $badge, bool $csv = true, bool $pdf = true): void {
+    $base = APP_BASE;
 ?>
     <div class="col-md-6 col-lg-4">
         <div class="card border-0 shadow-sm h-100">
@@ -51,13 +63,13 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                 <p class="text-muted small flex-grow-1 mb-3"><?= h($subtitle) ?></p>
                 <div class="d-flex gap-2">
                     <?php if ($csv): ?>
-                        <a href="api/generate_report.php?type=<?= h($type) ?>&format=csv"
+                        <a href="<?= $base ?>/api/generate_report.php?type=<?= h($type) ?>&format=csv"
                            class="btn btn-outline-primary btn-sm flex-fill">
                             <i class="fas fa-file-csv me-1"></i>CSV
                         </a>
                     <?php endif; ?>
                     <?php if ($pdf): ?>
-                        <a href="api/generate_report.php?type=<?= h($type) ?>&format=pdf"
+                        <a href="<?= $base ?>/api/generate_report.php?type=<?= h($type) ?>&format=pdf"
                            target="_blank" class="btn btn-outline-danger btn-sm flex-fill">
                             <i class="fas fa-file-pdf me-1"></i>PDF
                         </a>
@@ -80,24 +92,28 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                     <h4 class="mb-1"><i class="fas fa-download text-primary me-2"></i>Downloads</h4>
                     <p class="text-muted small mb-0">
                         <?= $gender ? h($gender).' wing only' : 'All wings (admin)' ?>
-                        · CSV exports or branded PDF reports
+                        <?php if ($activeSem): ?>
+                            · <strong><?= h($activeSem['name']) ?></strong>
+                        <?php endif; ?>
                     </p>
                 </div>
                 <span class="badge bg-info">
                     <i class="fas fa-shield-alt me-1"></i>
-                    Scoped to your role
+                    <?= $isAdmin ? 'Full system access' : 'Scoped to your wing' ?>
                 </span>
             </div>
 
-            <!-- Info banner -->
             <div class="alert alert-info d-flex align-items-start mb-3">
                 <i class="fas fa-info-circle me-2 mt-1"></i>
                 <div class="small">
                     <strong>Scope:</strong>
-                    Deans and Secretaries download only their wing.
-                    Admin downloads everything.
-                    <strong>CSV</strong> opens in Excel/Sheets.
-                    <strong>PDF</strong> is UEAB-branded, ready to print.
+                    <?= $isAdmin ? 'Admin downloads every wing and every report.' : 'Deans and Secretaries only see their own wing.' ?>
+                    &nbsp;·&nbsp;
+                    <strong>CSV</strong> — Excel-ready raw data.
+                    <strong>PDF</strong> — UEAB-branded, printable report.
+                    <?php if ($activeSid): ?>
+                        &nbsp;·&nbsp; Statistics reflect the <strong>active semester</strong>.
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -115,14 +131,14 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
 
                 <?php download_card(
                     'Unplaced Students',
-                    'Students with no confirmed placement — for follow-up and manual assignment.',
+                    'Students with no confirmed placement this semester — for follow-up.',
                     'fa-user-slash', 'bg-danger-subtle text-danger',
                     'unplaced', number_format($countUnplaced).' unplaced'
                 ); ?>
 
                 <?php download_card(
                     'Confirmed Bookings',
-                    'Every confirmed booking with student, room, approver, and penalty.',
+                    'Every confirmed booking for the semester — student, room, approver, penalty.',
                     'fa-check-circle', 'bg-warning-subtle text-warning',
                     'bookings', number_format($countConfirmed).' confirmed'
                 ); ?>
@@ -170,7 +186,6 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
             </div>
             <?php endif; ?>
 
-            <!-- ============ FOOTNOTE ============ -->
             <div class="card border-0 shadow-sm mt-4">
                 <div class="card-body d-flex flex-wrap align-items-center gap-3 small text-muted">
                     <div><i class="fas fa-file-csv text-primary me-1"></i><strong>CSV</strong> — raw data, Excel-ready</div>

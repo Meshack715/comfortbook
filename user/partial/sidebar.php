@@ -122,13 +122,18 @@ function nav_active(array $pages, string $current): string {
                 <div class="sb-sidenav-menu-heading">Booking Control</div>
                 <a class="nav-link <?= $current === 'phase_control.php' ? 'active' : '' ?>"
                    href="<?= $root ?>/user/phase_control.php">
-                    <div class="sb-nav-link-icon"><i class="fas fa-clock"></i></div>
-                    Phase Control
+                    <div class="sb-nav-link-icon"><i class="fas fa-calendar-alt"></i></div>
+                    Semester Control
                 </a>
                 <?php endif; ?>
 
                 <?php if ($isDean): ?>
                 <div class="sb-sidenav-menu-heading">Booking</div>
+                <a class="nav-link <?= $current === 'phase_windows.php' ? 'active' : '' ?>"
+                   href="<?= $root ?>/user/phase_windows.php">
+                    <div class="sb-nav-link-icon"><i class="fas fa-clock"></i></div>
+                    Phase Windows
+                </a>
                 <a class="nav-link <?= $current === 'send_links.php' ? 'active' : '' ?>"
                    href="<?= $root ?>/user/send_links.php">
                     <div class="sb-nav-link-icon"><i class="fas fa-paper-plane"></i></div>
@@ -147,6 +152,11 @@ function nav_active(array $pages, string $current): string {
                    href="<?= $root ?>/user/unplaced.php">
                     <div class="sb-nav-link-icon"><i class="fas fa-user-slash"></i></div>
                     Unplaced Students
+                </a>
+                <a class="nav-link <?= $current === 'room_assignment.php' ? 'active' : '' ?>"
+                   href="<?= $root ?>/user/room_assignment.php">
+                    <div class="sb-nav-link-icon"><i class="fas fa-random"></i></div>
+                    Room Assignment
                 </a>
                 <a class="nav-link <?= nav_active(['students.php','student_form.php'], $current) ?>"
                    href="<?= $root ?>/user/students.php">

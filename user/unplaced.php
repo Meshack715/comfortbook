@@ -84,7 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
         }
-        redirect(APP_BASE . '/user/unplaced.php');
+        redirect('unplaced.php');
     }
 }
 

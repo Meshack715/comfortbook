@@ -14,7 +14,7 @@ if ($isEdit) {
     $block = $stmt->fetch();
     if (!$block) {
         $_SESSION['flash'] = ['type' => 'danger', 'msg' => 'Building not found.'];
-        redirect(APP_BASE . '/buildings.php');
+        redirect('buildings.php');
     }
 }
 
@@ -78,7 +78,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             audit_log($_SESSION['user_id'], null, 'block_add', "Added block #$newId: {$form['name']} ({$form['gender']})");
             $_SESSION['flash'] = ['type' => 'success', 'msg' => 'Building created.'];
         }
-        redirect(APP_BASE . '/buildings.php');
+        redirect('buildings.php');
     }
 }
 ?>

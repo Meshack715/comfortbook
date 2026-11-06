@@ -14,7 +14,7 @@ if ($isEdit) {
     $room = $stmt->fetch();
     if (!$room) {
         $_SESSION['flash'] = ['type' => 'danger', 'msg' => 'Room not found.'];
-        redirect(APP_BASE . '/user/rooms.php');
+        redirect('rooms.php');
     }
 }
 
@@ -107,7 +107,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             audit_log($_SESSION['user_id'], null, 'room_add', "Added room #$newId: {$block['name']} {$form['room_number']}");
             $_SESSION['flash'] = ['type' => 'success', 'msg' => 'Room created.'];
         }
-        redirect(APP_BASE . '/user/rooms.php');
+        redirect('rooms.php');
     }
 }
 ?>

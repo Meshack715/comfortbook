@@ -1,5 +1,5 @@
 <?php
-// user/dashboard.php
+// user/dashboard.php — role-aware
 require_once __DIR__ . '/../includes/config.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_login();
@@ -9,6 +9,9 @@ $gender    = gender_filter();     // null = admin (both wings)
 $isAdmin   = is_admin();
 $isDean    = is_dean();
 $isSec     = is_secretary();
+
+$activeSem = active_semester();
+$activeSid = $activeSem ? (int)$activeSem['id'] : 0;
 
 // ------------------------------------------------------------
 // Helper: gender WHERE fragment
@@ -26,9 +29,20 @@ $stmt = $pdo->prepare("SELECT COUNT(*) FROM students WHERE is_active = 1 $g");
 $stmt->execute($p);
 $total_students = (int)$stmt->fetchColumn();
 
-[$g, $p] = gender_where($gender);
-$stmt = $pdo->prepare("SELECT COUNT(*) FROM students WHERE is_active = 1 AND placed = 0 $g");
-$stmt->execute($p);
+// Placed = confirmed booking in active semester
+$placedExpr = $activeSid
+    ? "EXISTS (SELECT 1 FROM bookings b WHERE b.student_id = s.id AND b.status='confirmed' AND b.semester_id = $activeSid)"
+    : "s.placed = 1";
+
+$gS = $gender ? ' AND s.gender = ?' : '';
+$pS = $gender ? [$gender] : [];
+
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM students s WHERE s.is_active=1 AND $placedExpr $gS");
+$stmt->execute($pS);
+$placed_students = (int)$stmt->fetchColumn();
+
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM students s WHERE s.is_active=1 AND NOT ($placedExpr) $gS");
+$stmt->execute($pS);
 $unplaced = (int)$stmt->fetchColumn();
 
 // ------------------------------------------------------------
@@ -84,7 +98,7 @@ $stmt = $pdo->prepare("
 $stmt->execute($p);
 $confirmed_bookings = (int)$stmt->fetchColumn();
 
-// Penalty revenue (admin sees both, others see own wing)
+// Penalty revenue
 [$g, $p] = gender_where($gender, 's.gender');
 $stmt = $pdo->prepare("
     SELECT COALESCE(SUM(b.penalty_amount),0) FROM bookings b
@@ -95,9 +109,9 @@ $stmt->execute($p);
 $penalty_revenue = (int)$stmt->fetchColumn();
 
 // ------------------------------------------------------------
-// PHASE
+// PHASE (per-wing for dean/sec, strongest across both for admin)
 // ------------------------------------------------------------
-$phase = current_phase();
+$phase = current_phase($gender);
 $phaseLabel = match($phase) {
     1 => 'Phase 1 — Keep or Release',
     2 => 'Phase 2 — Move Window',
@@ -106,6 +120,12 @@ $phaseLabel = match($phase) {
 $phaseColor = match($phase) {
     1 => 'primary', 2 => 'success', default => 'secondary'
 };
+
+// Wing windows (for the banner)
+$myWindow = null;
+if ($activeSid && $gender) {
+    $myWindow = semester_window($activeSid, $gender);
+}
 
 // ------------------------------------------------------------
 // RECENT BOOKINGS (last 6)
@@ -135,6 +155,20 @@ if ($isAdmin) {
 }
 
 // ------------------------------------------------------------
+// ADMIN: per-wing windows summary for dashboard
+// ------------------------------------------------------------
+$adminWings = [];
+if ($isAdmin && $activeSid) {
+    foreach (['Male', 'Female'] as $g) {
+        $w = semester_window($activeSid, $g);
+        $adminWings[$g] = [
+            'window' => $w,
+            'phase'  => current_phase($g),
+        ];
+    }
+}
+
+// ------------------------------------------------------------
 // Greeting + status badge helper
 // ------------------------------------------------------------
 $hour = (int)date('H');
@@ -148,6 +182,14 @@ function h_status(string $status): string {
         'confirmed'        => '<span class="badge bg-success">Confirmed</span>',
         'cancelled'        => '<span class="badge bg-danger">Cancelled</span>',
         default            => '<span class="badge bg-light text-dark">' . h($status) . '</span>',
+    };
+}
+
+function phase_badge(?int $p): string {
+    return match($p) {
+        1 => '<span class="badge bg-primary"><i class="fas fa-circle me-1"></i>Phase 1 Live</span>',
+        2 => '<span class="badge bg-success"><i class="fas fa-circle me-1"></i>Phase 2 Live</span>',
+        default => '<span class="badge bg-secondary"><i class="fas fa-circle me-1"></i>Closed</span>',
     };
 }
 ?>
@@ -172,21 +214,34 @@ function h_status(string $status): string {
                         <?php else: ?>
                             · <span class="badge bg-dark">Both Wings</span>
                         <?php endif; ?>
+                        <?php if ($activeSem): ?>
+                            · <span class="badge bg-info text-dark"><?= h($activeSem['name']) ?></span>
+                        <?php else: ?>
+                            · <span class="badge bg-warning text-dark">No active semester</span>
+                        <?php endif; ?>
                     </p>
                 </div>
                 <div class="d-flex gap-2 mt-2 mt-md-0">
                     <?php if ($isDean): ?>
-                    <a href="send_links.php" class="btn btn-primary btn-sm">
-                        <i class="fas fa-paper-plane me-1"></i>Send Links
-                    </a>
+                        <a href="phase_windows.php" class="btn btn-outline-primary btn-sm">
+                            <i class="fas fa-clock me-1"></i>Phase Windows
+                        </a>
+                        <a href="send_links.php" class="btn btn-primary btn-sm">
+                            <i class="fas fa-paper-plane me-1"></i>Send Links
+                        </a>
                     <?php endif; ?>
                     <?php if ($isDean || $isSec): ?>
-                    <a href="approvals.php" class="btn btn-outline-primary btn-sm">
-                        <i class="fas fa-check-circle me-1"></i>Approvals
-                        <?php if ($pending_approvals > 0): ?>
-                            <span class="badge bg-danger ms-1"><?= $pending_approvals ?></span>
-                        <?php endif; ?>
-                    </a>
+                        <a href="approvals.php" class="btn btn-outline-primary btn-sm">
+                            <i class="fas fa-check-circle me-1"></i>Approvals
+                            <?php if ($pending_approvals > 0): ?>
+                                <span class="badge bg-danger ms-1"><?= $pending_approvals ?></span>
+                            <?php endif; ?>
+                        </a>
+                    <?php endif; ?>
+                    <?php if ($isAdmin): ?>
+                        <a href="phase_control.php" class="btn btn-primary btn-sm">
+                            <i class="fas fa-calendar-alt me-1"></i>Semester Control
+                        </a>
                     <?php endif; ?>
                 </div>
             </div>
@@ -197,23 +252,88 @@ function h_status(string $status): string {
                 <div class="flex-grow-1">
                     <strong><?= h($phaseLabel) ?></strong>
                     <div class="small">
-                        <?php if ($phase === 1): ?>
-                            <?= h(get_config('phase1_start')) ?> → <?= h(get_config('phase1_end')) ?>
-                            · Students can only keep or release their current room
-                        <?php elseif ($phase === 2): ?>
-                            <?= h(get_config('phase2_start')) ?> → <?= h(get_config('phase2_end')) ?>
-                            · Released + vacant rooms are open for moves
-                        <?php else: ?>
-                            Booking is not currently open. Check Phase Control.
+                        <?php if ($gender && $myWindow): ?>
+                            <!-- Dean / Secretary — own wing's window -->
+                            <?php if ($phase === 1): ?>
+                                <strong>Phase 1:</strong>
+                                <?= date('M j, H:i', strtotime($myWindow['phase1_start'])) ?>
+                                → <?= date('M j, H:i', strtotime($myWindow['phase1_end'])) ?>
+                                · students can keep or release
+                            <?php elseif ($phase === 2): ?>
+                                <strong>Phase 2:</strong>
+                                <?= date('M j, H:i', strtotime($myWindow['phase2_start'])) ?>
+                                → <?= date('M j, H:i', strtotime($myWindow['phase2_end'])) ?>
+                                · released + vacant rooms open
+                            <?php else: ?>
+                                <?= $gender ?> wing phase window is closed. Deans set windows in <a href="phase_windows.php">Phase Windows</a>.
+                            <?php endif; ?>
+                        <?php elseif ($isAdmin): ?>
+                            <!-- Admin — summary across wings -->
+                            <?php if (!$activeSem): ?>
+                                No active semester. <a href="phase_control.php" class="alert-link">Activate one</a>.
+                            <?php else: ?>
+                                Deans set their own wing windows — see below.
+                            <?php endif; ?>
                         <?php endif; ?>
                     </div>
                 </div>
                 <?php if ($isAdmin): ?>
-                <a href="phase_control.php" class="btn btn-sm btn-<?= $phaseColor ?>">
-                    <i class="fas fa-cog me-1"></i>Manage
-                </a>
+                    <a href="phase_control.php" class="btn btn-sm btn-<?= $phaseColor ?>">
+                        <i class="fas fa-cog me-1"></i>Manage
+                    </a>
+                <?php elseif ($isDean): ?>
+                    <a href="phase_windows.php" class="btn btn-sm btn-<?= $phaseColor ?>">
+                        <i class="fas fa-cog me-1"></i>Set Windows
+                    </a>
                 <?php endif; ?>
             </div>
+
+            <?php if ($isAdmin && $activeSem): ?>
+            <!-- ============ ADMIN: WING WINDOW SUMMARY ============ -->
+            <div class="row g-3 mb-3">
+                <?php foreach ([
+                    ['gender'=>'Male',   'label'=>'Men’s Wing',   'icon'=>'fa-mars',  'color'=>'primary'],
+                    ['gender'=>'Female', 'label'=>'Women’s Wing', 'icon'=>'fa-venus', 'color'=>'danger'],
+                ] as $w):
+                    $data = $adminWings[$w['gender']] ?? null;
+                    $win  = $data['window'] ?? null;
+                    $ph   = $data['phase']  ?? null;
+                ?>
+                <div class="col-md-6">
+                    <div class="card border-0 shadow-sm h-100">
+                        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0 fw-bold">
+                                <i class="fas <?= $w['icon'] ?> text-<?= $w['color'] ?> me-2"></i><?= h($w['label']) ?>
+                            </h6>
+                            <?= phase_badge($ph) ?>
+                        </div>
+                        <div class="card-body small">
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <div class="text-muted">Phase 1</div>
+                                    <?php if ($win && $win['phase1_start']): ?>
+                                        <div><strong><?= date('M j, H:i', strtotime($win['phase1_start'])) ?></strong></div>
+                                        <div>→ <?= date('M j, H:i', strtotime($win['phase1_end'])) ?></div>
+                                    <?php else: ?>
+                                        <div class="text-muted fst-italic">Not set</div>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="col-6">
+                                    <div class="text-muted">Phase 2</div>
+                                    <?php if ($win && $win['phase2_start']): ?>
+                                        <div><strong><?= date('M j, H:i', strtotime($win['phase2_start'])) ?></strong></div>
+                                        <div>→ <?= date('M j, H:i', strtotime($win['phase2_end'])) ?></div>
+                                    <?php else: ?>
+                                        <div class="text-muted fst-italic">Not set</div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
 
             <!-- ============ PRIMARY STAT CARDS ============ -->
             <div class="row g-3 mb-3">
@@ -229,7 +349,7 @@ function h_status(string $status): string {
                                     <i class="fas fa-user-graduate"></i>
                                 </div>
                             </div>
-                            <a href="students.php" class="small text-decoration-none">Manage <i class="fas fa-arrow-right"></i></a>
+                            <div class="small text-muted"><?= $placed_students ?> placed · <?= $unplaced ?> unplaced</div>
                         </div>
                     </div>
                 </div>
@@ -256,7 +376,7 @@ function h_status(string $status): string {
                         <div class="card-body">
                             <div class="d-flex justify-content-between">
                                 <div>
-                                    <div class="text-muted small text-uppercase">Pending Approvals</div>
+                                    <div class="text-muted small text-uppercase">Pending</div>
                                     <div class="fs-3 fw-bold text-warning"><?= number_format($pending_approvals) ?></div>
                                 </div>
                                 <div class="stat-icon bg-warning-subtle text-warning">
@@ -292,15 +412,16 @@ function h_status(string $status): string {
                 <div class="col-6 col-lg-3">
                     <div class="card border-0 shadow-sm h-100">
                         <div class="card-body">
-                            <div class="text-muted small text-uppercase">Confirmed Bookings</div>
+                            <div class="text-muted small text-uppercase">Confirmed</div>
                             <div class="fs-3 fw-bold text-success"><?= number_format($confirmed_bookings) ?></div>
+                            <div class="small text-muted">For this semester</div>
                         </div>
                     </div>
                 </div>
                 <div class="col-6 col-lg-3">
                     <div class="card border-0 shadow-sm h-100">
                         <div class="card-body">
-                            <div class="text-muted small text-uppercase">Released Rooms</div>
+                            <div class="text-muted small text-uppercase">Released</div>
                             <div class="fs-3 fw-bold text-info"><?= number_format($released_rooms) ?></div>
                             <div class="small text-muted">Available for moves</div>
                         </div>
@@ -389,27 +510,33 @@ function h_status(string $status): string {
                         <div class="card-body">
                             <div class="d-grid gap-2">
                                 <?php if ($isAdmin): ?>
-                                    <a href="student_add.php" class="btn btn-outline-primary btn-sm text-start">
+                                    <a href="student_form.php" class="btn btn-outline-primary btn-sm text-start">
                                         <i class="fas fa-user-plus me-2"></i>Add Student
                                     </a>
-                                    <a href="building_add.php" class="btn btn-outline-primary btn-sm text-start">
+                                    <a href="building_form.php" class="btn btn-outline-primary btn-sm text-start">
                                         <i class="fas fa-building me-2"></i>Add Building
                                     </a>
-                                    <a href="room_add.php" class="btn btn-outline-primary btn-sm text-start">
+                                    <a href="room_form.php" class="btn btn-outline-primary btn-sm text-start">
                                         <i class="fas fa-bed me-2"></i>Add Room
                                     </a>
-                                    <a href="staff_add.php" class="btn btn-outline-primary btn-sm text-start">
+                                    <a href="staff_form.php" class="btn btn-outline-primary btn-sm text-start">
                                         <i class="fas fa-user-tie me-2"></i>Add Staff
                                     </a>
                                     <a href="phase_control.php" class="btn btn-outline-warning btn-sm text-start">
-                                        <i class="fas fa-clock me-2"></i>Phase Control
+                                        <i class="fas fa-calendar-alt me-2"></i>Semester Control
                                     </a>
                                 <?php elseif ($isDean): ?>
+                                    <a href="phase_windows.php" class="btn btn-outline-primary btn-sm text-start">
+                                        <i class="fas fa-clock me-2"></i>Set Phase Windows
+                                    </a>
                                     <a href="send_links.php" class="btn btn-primary btn-sm text-start">
                                         <i class="fas fa-paper-plane me-2"></i>Send Magic Links
                                     </a>
                                     <a href="approvals.php" class="btn btn-outline-primary btn-sm text-start">
                                         <i class="fas fa-check-circle me-2"></i>Review Approvals
+                                    </a>
+                                    <a href="room_assignment.php" class="btn btn-outline-info btn-sm text-start">
+                                        <i class="fas fa-random me-2"></i>Room Assignment
                                     </a>
                                     <a href="unplaced.php" class="btn btn-outline-warning btn-sm text-start">
                                         <i class="fas fa-user-slash me-2"></i>Unplaced Students
@@ -420,6 +547,9 @@ function h_status(string $status): string {
                                 <?php else: ?>
                                     <a href="approvals.php" class="btn btn-primary btn-sm text-start">
                                         <i class="fas fa-check-circle me-2"></i>Review Approvals
+                                    </a>
+                                    <a href="room_assignment.php" class="btn btn-outline-info btn-sm text-start">
+                                        <i class="fas fa-random me-2"></i>Room Assignment
                                     </a>
                                     <a href="unplaced.php" class="btn btn-outline-warning btn-sm text-start">
                                         <i class="fas fa-user-slash me-2"></i>Unplaced Students

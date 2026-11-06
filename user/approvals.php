@@ -5,7 +5,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/mailer.php';
 require_role(['dean_men','dean_women','secretary_men','secretary_women']);
 
-$gender  = gender_filter();      // 'Male' or 'Female'
+$gender  = gender_filter();
 $isDean  = is_dean();
 $flash   = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
@@ -34,51 +34,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect(APP_BASE . '/user/approvals.php');
         }
 
-        // ---------- APPROVE ----------
+        // ---------- APPROVE (confirm only — do NOT assign room yet) ----------
         if ($action === 'approve' && $booking['status'] === 'pending_approval') {
             try {
                 $pdo->beginTransaction();
 
-                // Mark booking confirmed
+                // Target semester = booking's own semester, else next-up semester
+                $targetSem = (int)($booking['semester_id'] ?? 0);
+                if ($targetSem <= 0) {
+                    $targetSem = active_semester_id() ?? 0;
+                }
+
                 $pdo->prepare("
                     UPDATE bookings
-                    SET status='confirmed', approved_by=?, approved_at=NOW()
+                    SET status='confirmed',
+                        approved_by=?,
+                        approved_at=NOW(),
+                        semester_id=?
                     WHERE id = ?
-                ")->execute([$_SESSION['user_id'], $bid]);
-
-                // Mark room occupied, clear reservation
-                $pdo->prepare("
-                    UPDATE rooms SET status='occupied', reserved_by_student_id=NULL, reserved_at=NULL
-                    WHERE id = ?
-                ")->execute([$booking['room_id']]);
-
-                // Student placed, update current room
-                $pdo->prepare("
-                    UPDATE students SET placed=1, current_room_id=?
-                    WHERE id = ?
-                ")->execute([$booking['room_id'], $booking['student_id']]);
-
-                // Free old room if different (Phase 2 move)
-                $oldRoom = null;
-                $stmt2 = $pdo->prepare("SELECT current_room_id FROM students WHERE id = ?");
-                $stmt2->execute([$booking['student_id']]);
-                $oldRoom = $stmt2->fetchColumn();
-                // (already updated above so this is a no-op; safe)
+                ")->execute([$_SESSION['user_id'], $targetSem, $bid]);
 
                 $pdo->commit();
 
                 audit_log($_SESSION['user_id'], $booking['student_id'], 'booking_approve',
-                    "Approved booking #$bid for {$booking['reg_number']} → {$booking['room_number']}");
+                    "Confirmed booking #$bid for {$booking['reg_number']} → {$booking['room_number']} (sem #$targetSem)");
 
-                // Welcome email
-                @send_welcome_email(
+                // Confirmation email — NOT the "welcome to your room" one
+                @send_confirmation_email(
                     $booking['email'],
                     $booking['full_name'],
                     $booking['room_number'],
                     $booking['block_name']
                 );
 
-                $_SESSION['flash'] = ['type'=>'success','msg'=>'Booking approved · welcome email sent.'];
+                $_SESSION['flash'] = [
+                    'type'=>'success',
+                    'msg'=>'Booking confirmed · email sent. Room assignment happens when the semester is activated.',
+                ];
             } catch (Throwable $e) {
                 $pdo->rollBack();
                 $_SESSION['flash'] = ['type'=>'danger','msg'=>'Approve failed: '.$e->getMessage()];
@@ -97,16 +89,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE id = ?
                 ")->execute([$reason, $bid]);
 
-                // Free the room — back to previous state
-                if ($booking['phase'] == 2) {
-                    // Released/vacant becomes available again
-                    $pdo->prepare("UPDATE rooms SET status='available_p2', reserved_by_student_id=NULL, reserved_at=NULL WHERE id=?")
-                        ->execute([$booking['room_id']]);
-                } else {
-                    // Phase 1 keep — restore current room as occupied
-                    $pdo->prepare("UPDATE rooms SET status='occupied', reserved_by_student_id=NULL, reserved_at=NULL WHERE id=?")
-                        ->execute([$booking['room_id']]);
-                }
+                // Free the room if it was reserved
+                $pdo->prepare("
+                    UPDATE rooms
+                    SET status = CASE WHEN phase = 1 THEN 'occupied' ELSE 'available_p2' END,
+                        reserved_by_student_id = NULL,
+                        reserved_at = NULL
+                    WHERE id = ?
+                ")->execute([$booking['room_id']]);
 
                 $pdo->commit();
 
@@ -130,15 +120,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE bookings SET status='cancelled', cancelled_reason=? WHERE id=?")
                     ->execute([$reason, $bid]);
 
-                $pdo->prepare("UPDATE rooms SET status='available_p2', reserved_by_student_id=NULL, reserved_at=NULL WHERE id=?")
-                    ->execute([$booking['room_id']]);
+                // Free the room (only if no one else occupies it in that semester)
+                $pdo->prepare("
+                    UPDATE rooms SET status='available_p2', reserved_by_student_id=NULL, reserved_at=NULL
+                    WHERE id=?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bookings b2
+                          WHERE b2.room_id = rooms.id
+                            AND b2.status='confirmed'
+                            AND b2.id <> ?
+                      )
+                ")->execute([$booking['room_id'], $bid]);
 
-                $pdo->prepare("UPDATE students SET placed=0 WHERE id=?")
-                    ->execute([$booking['student_id']]);
+                // If the semester is already active, un-place the student
+                $activeSid = active_semester_id();
+                if ($activeSid && (int)$booking['semester_id'] === (int)$activeSid) {
+                    $pdo->prepare("UPDATE students SET placed=0, current_room_id=NULL WHERE id=?")
+                        ->execute([$booking['student_id']]);
+                }
 
                 $pdo->commit();
                 audit_log($_SESSION['user_id'], $booking['student_id'], 'booking_cancel', "Dean cancelled booking #$bid");
-                $_SESSION['flash'] = ['type'=>'success','msg'=>'Confirmed booking cancelled. Student marked unplaced.'];
+                $_SESSION['flash'] = ['type'=>'success','msg'=>'Confirmed booking cancelled. Room freed.'];
             } catch (Throwable $e) {
                 $pdo->rollBack();
                 $_SESSION['flash'] = ['type'=>'danger','msg'=>'Cancel failed: '.$e->getMessage()];
@@ -154,9 +157,11 @@ if (!in_array($status, ['pending_approval','confirmed','cancelled','all'], true)
     $status = 'pending_approval';
 }
 
-$where = ' WHERE s.gender = ?'; $params = [$gender];
+$where  = ' WHERE s.gender = ?';
+$params = [$gender];
 if ($status !== 'all') {
-    $where .= ' AND b.status = ?'; $params[] = $status;
+    $where .= ' AND b.status = ?';
+    $params[] = $status;
 }
 
 $search = trim($_GET['q'] ?? '');
@@ -168,12 +173,14 @@ if ($search !== '') {
 $stmt = $pdo->prepare("
     SELECT b.*, s.full_name, s.email, s.reg_number, s.gender,
            r.room_number, bl.name AS block_name,
-           u.full_name AS approver
+           u.full_name AS approver,
+           sem.name AS semester_name
     FROM bookings b
-    JOIN students s ON s.id = b.student_id
-    JOIN rooms r    ON r.id = b.room_id
-    JOIN blocks bl  ON bl.id = r.block_id
-    LEFT JOIN users u ON u.id = b.approved_by
+    JOIN students s  ON s.id = b.student_id
+    JOIN rooms r     ON r.id = b.room_id
+    JOIN blocks bl   ON bl.id = r.block_id
+    LEFT JOIN users u   ON u.id = b.approved_by
+    LEFT JOIN semesters sem ON sem.id = b.semester_id
     $where
     ORDER BY b.created_at DESC
     LIMIT 500
@@ -190,6 +197,8 @@ $stmt = $pdo->prepare("
 $stmt->execute([$gender]);
 $counts = ['pending_approval'=>0,'confirmed'=>0,'cancelled'=>0];
 foreach ($stmt as $row) $counts[$row['status']] = (int)$row['c'];
+
+$activeSem = active_semester();
 
 function status_badge(string $s): string {
     return match($s) {
@@ -211,7 +220,12 @@ function status_badge(string $s): string {
             <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-3">
                 <div>
                     <h4 class="mb-1"><i class="fas fa-check-circle text-primary me-2"></i>Approvals</h4>
-                    <p class="text-muted small mb-0"><?= h($gender) ?> wing · <?= $counts['pending_approval'] ?> awaiting</p>
+                    <p class="text-muted small mb-0">
+                        <?= h($gender) ?> wing · <?= $counts['pending_approval'] ?> awaiting
+                        <?php if ($activeSem): ?>
+                            · active: <strong><?= h($activeSem['name']) ?></strong>
+                        <?php endif; ?>
+                    </p>
                 </div>
             </div>
 
@@ -220,6 +234,17 @@ function status_badge(string $s): string {
                     <?= h($flash['msg']) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             <?php endif; ?>
+
+            <!-- Info about the new flow -->
+            <div class="alert alert-info d-flex align-items-start">
+                <i class="fas fa-info-circle me-2 mt-1"></i>
+                <div class="small">
+                    <strong>Approve</strong> marks the booking as confirmed for its semester and sends a
+                    <em>confirmation</em> email.
+                    The student is <strong>physically placed</strong> into the room only when an admin
+                    <strong>activates the semester</strong> in Semester Control — that's when the welcome email fires.
+                </div>
+            </div>
 
             <!-- Status chips -->
             <div class="d-flex flex-wrap gap-2 mb-3">
@@ -264,10 +289,10 @@ function status_badge(string $s): string {
                                 <tr>
                                     <th>Student</th>
                                     <th>Room</th>
+                                    <th>Semester</th>
                                     <th>Phase</th>
                                     <th>OTP</th>
                                     <th>M-Pesa</th>
-                                    <th>Penalty</th>
                                     <th>Status</th>
                                     <th class="text-end">Actions</th>
                                 </tr>
@@ -282,6 +307,9 @@ function status_badge(string $s): string {
                                     <td>
                                         <div class="small fw-semibold"><?= h($b['room_number']) ?></div>
                                         <div class="text-muted" style="font-size:.72rem;"><?= h($b['block_name']) ?></div>
+                                    </td>
+                                    <td class="small">
+                                        <?= $b['semester_name'] ? h($b['semester_name']) : '<span class="text-muted">—</span>' ?>
                                     </td>
                                     <td><span class="badge bg-light text-dark">P<?= (int)$b['phase'] ?></span></td>
                                     <td>
@@ -298,18 +326,11 @@ function status_badge(string $s): string {
                                             <span class="text-muted small">—</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td>
-                                        <?php if ((int)$b['penalty_amount'] > 0): ?>
-                                            <span class="badge bg-warning text-dark">KES <?= (int)$b['penalty_amount'] ?></span>
-                                        <?php else: ?>
-                                            <span class="text-muted small">—</span>
-                                        <?php endif; ?>
-                                    </td>
                                     <td><?= status_badge($b['status']) ?></td>
                                     <td class="text-end">
                                         <?php if ($b['status'] === 'pending_approval'): ?>
                                             <form method="post" class="d-inline"
-                                                  onsubmit="return confirm('Approve booking for <?= h(addslashes($b['full_name'])) ?> into <?= h($b['room_number']) ?>?');">
+                                                  onsubmit="return confirm('Confirm booking for <?= h(addslashes($b['full_name'])) ?> into <?= h($b['room_number']) ?>? The student will be placed in the room when the semester is activated.');">
                                                 <input type="hidden" name="action" value="approve">
                                                 <input type="hidden" name="booking_id" value="<?= (int)$b['id'] ?>">
                                                 <button class="btn btn-sm btn-success">
@@ -333,6 +354,11 @@ function status_badge(string $s): string {
                                                     data-room="<?= h($b['room_number']) ?>">
                                                 <i class="fas fa-ban"></i> Cancel
                                             </button>
+                                        <?php elseif ($b['status'] === 'confirmed'): ?>
+                                            <span class="badge bg-light text-dark small"
+                                                  title="Placed when semester is activated">
+                                                <i class="fas fa-hourglass-half me-1"></i>Awaiting semester start
+                                            </span>
                                         <?php else: ?>
                                             <span class="text-muted small">—</span>
                                         <?php endif; ?>
@@ -381,7 +407,7 @@ function status_badge(string $s): string {
             </div>
             <div class="modal-body">
                 <p>Cancel confirmed booking for <strong id="cancelName"></strong> (Room <strong id="cancelRoom"></strong>)?</p>
-                <p class="small text-muted">The student will be marked <strong>unplaced</strong> and the room freed.</p>
+                <p class="small text-muted">The room is freed and the student is unplaced.</p>
                 <label class="form-label">Reason</label>
                 <input type="text" name="reason" class="form-control" required placeholder="Reason for cancel">
                 <input type="hidden" name="action" value="cancel">

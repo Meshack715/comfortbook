@@ -9,7 +9,9 @@ $gender  = gender_filter();
 $flash   = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 
-// Delete (admin only)
+$activeSid = active_semester_id();
+
+// ---------- DELETE (admin only) ----------
 if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delete') {
     $id = (int)($_POST['id'] ?? 0);
     if ($id > 0) {
@@ -23,31 +25,38 @@ if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? ''
             $_SESSION['flash'] = ['type'=>'success','msg'=>'Student deleted.'];
         }
     }
-    redirect(APP_BASE . '/user/students.php');
+    redirect(APP_BASE.'/user/students.php');
 }
 
-// Filters
+// ---------- FILTERS ----------
 $filterGender = $_GET['gender'] ?? '';
 $filterBlock  = (int)($_GET['block_id'] ?? 0);
 $filterPlaced = $_GET['placed'] ?? '';
 $search       = trim($_GET['q'] ?? '');
 
-$where = ' WHERE 1=1'; $params = [];
+// Placed in current semester = has a confirmed booking for the active semester
+$placedExpr = $activeSid
+    ? "EXISTS (SELECT 1 FROM bookings b WHERE b.student_id = s.id AND b.status='confirmed' AND b.semester_id = $activeSid)"
+    : "s.placed = 1";
+
+$where  = ' WHERE s.is_active = 1';
+$params = [];
 if ($gender !== null) {
     $where .= ' AND s.gender = ?'; $params[] = $gender;
 } elseif (in_array($filterGender, ['Male','Female'], true)) {
     $where .= ' AND s.gender = ?'; $params[] = $filterGender;
 }
 if ($filterBlock > 0) { $where .= ' AND r.block_id = ?'; $params[] = $filterBlock; }
-if ($filterPlaced === '1')  $where .= ' AND s.placed = 1';
-if ($filterPlaced === '0')  $where .= ' AND s.placed = 0';
+if ($filterPlaced === '1')  $where .= " AND $placedExpr";
+if ($filterPlaced === '0')  $where .= " AND NOT ($placedExpr)";
 if ($search !== '') {
     $where .= ' AND (s.full_name LIKE ? OR s.reg_number LIKE ? OR s.email LIKE ?)';
     $params[] = "%$search%"; $params[] = "%$search%"; $params[] = "%$search%";
 }
 
 $stmt = $pdo->prepare("
-    SELECT s.*, r.room_number, b.name AS block_name
+    SELECT s.*, r.room_number, b.name AS block_name,
+        $placedExpr AS placed_now
     FROM students s
     LEFT JOIN rooms r ON r.id = s.current_room_id
     LEFT JOIN blocks b ON b.id = r.block_id
@@ -64,14 +73,15 @@ if ($gender !== null) { $bWhere .= ' AND gender = ?'; $bP[] = $gender; }
 $stmt = $pdo->prepare("SELECT id, name, gender FROM blocks $bWhere ORDER BY gender, name");
 $stmt->execute($bP); $blocks = $stmt->fetchAll();
 
-// Stats
+// ---------- STATS (current semester) ----------
 $statsWhere = ' WHERE is_active = 1'; $statsP = [];
 if ($gender !== null) { $statsWhere .= ' AND gender = ?'; $statsP[] = $gender; }
 $stmt = $pdo->prepare("
     SELECT COUNT(*) total,
-        SUM(CASE WHEN placed = 1 THEN 1 ELSE 0 END) placed,
-        SUM(CASE WHEN placed = 0 THEN 1 ELSE 0 END) unplaced
-    FROM students $statsWhere
+        SUM(CASE WHEN $placedExpr THEN 1 ELSE 0 END) placed,
+        SUM(CASE WHEN NOT ($placedExpr) THEN 1 ELSE 0 END) unplaced
+    FROM students s
+    $statsWhere
 ");
 $stmt->execute($statsP);
 $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
@@ -88,6 +98,9 @@ $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
                     <p class="text-muted small mb-0">
                         <?= count($students) ?> result<?= count($students)===1?'':'s' ?>
                         <?= $gender ? ' · '.h($gender).' wing' : ' · All wings' ?>
+                        <?php if ($activeSid): ?>
+                            · placed for <strong><?= h(active_semester()['name']) ?></strong>
+                        <?php endif; ?>
                     </p>
                 </div>
                 <?php if ($isAdmin): ?>
@@ -104,7 +117,6 @@ $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
                 </div>
             <?php endif; ?>
 
-            <!-- Stats -->
             <div class="row g-3 mb-3">
                 <div class="col-4">
                     <div class="card border-0 shadow-sm"><div class="card-body text-center">
@@ -115,7 +127,7 @@ $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
                 <div class="col-4">
                     <div class="card border-0 shadow-sm"><div class="card-body text-center">
                         <div class="fs-3 fw-bold text-success"><?= number_format((int)$stats['placed']) ?></div>
-                        <div class="small text-muted text-uppercase">Placed</div>
+                        <div class="small text-muted text-uppercase">Placed (this sem)</div>
                     </div></div>
                 </div>
                 <div class="col-4">
@@ -126,7 +138,6 @@ $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
                 </div>
             </div>
 
-            <!-- Filters -->
             <div class="card border-0 shadow-sm mb-3"><div class="card-body">
                 <form method="get" class="row g-2 align-items-end">
                     <div class="col-md-3"><label class="form-label small mb-1">Search</label>
@@ -161,7 +172,6 @@ $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
                 </form>
             </div></div>
 
-            <!-- Table -->
             <div class="card border-0 shadow-sm"><div class="card-body p-0">
                 <?php if (empty($students)): ?>
                     <div class="text-center py-5 text-muted"><i class="fas fa-user-graduate fa-3x mb-3 opacity-25"></i><h6>No students found</h6></div>
@@ -175,7 +185,7 @@ $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
                                     <th>Current Room</th>
                                     <th>Year</th>
                                     <th>Phase 1</th>
-                                    <th>Placed</th>
+                                    <th>Placed (this sem)</th>
                                     <?php if ($isAdmin): ?><th class="text-end">Actions</th><?php endif; ?>
                                 </tr>
                             </thead>
@@ -205,7 +215,7 @@ $stats = $stmt->fetch() ?: ['total'=>0,'placed'=>0,'unplaced'=>0];
                                         } ?>
                                     </td>
                                     <td>
-                                        <?= $s['placed']
+                                        <?= $s['placed_now']
                                             ? '<span class="badge bg-success">Yes</span>'
                                             : '<span class="badge bg-warning text-dark">No</span>' ?>
                                     </td>

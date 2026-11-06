@@ -5,18 +5,51 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/mailer.php';
 require_role(['dean_men', 'dean_women']);
 
-$gender = gender_filter(); // 'Male' or 'Female'
-$isAdmin = is_admin();
-
-$flash = $_SESSION['flash'] ?? null;
+$gender = gender_filter();               // 'Male' or 'Female'
+$flash  = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
+
+// Which semester do these links belong to?
+// Rule: links belong to the NEXT semester after the active one.
+// If no next semester exists, fall back to the active one.
+$activeSem = active_semester();
+$bookingSem = null;
+if ($activeSem) {
+    $stmt = $pdo->prepare("
+        SELECT * FROM semesters
+        WHERE (academic_year > ? OR (academic_year = ? AND semester_no > ?))
+        ORDER BY academic_year ASC, semester_no ASC
+        LIMIT 1
+    ");
+    $stmt->execute([
+        $activeSem['academic_year'],
+        $activeSem['academic_year'],
+        (int)$activeSem['semester_no'],
+    ]);
+    $bookingSem = $stmt->fetch() ?: $activeSem;
+} else {
+    // No active → try the earliest non-active semester
+    $stmt = $pdo->query("SELECT * FROM semesters ORDER BY start_date ASC LIMIT 1");
+    $bookingSem = $stmt->fetch() ?: null;
+}
+
+// Phase gate — dean can only send when their OWN wing's phase is live
+$myPhase = current_phase($gender);
+$canSend = $myPhase !== null && $bookingSem !== null;
 
 // ---------- ACTIONS ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    // Generate + send to ALL active students in wing
-    if ($action === 'send_all') {
+    if (!$canSend) {
+        $_SESSION['flash'] = ['type'=>'danger','msg'=>'Cannot send links — your phase window is not active.'];
+        redirect(APP_BASE.'/user/send_links.php');
+    }
+
+    // ---------- SEND ALL (JSON progress) ----------
+    if ($action === 'send_all_start') {
+        // Just kick off — return the list of students to process
+        header('Content-Type: application/json');
         $stmt = $pdo->prepare("
             SELECT id, full_name, email FROM students
             WHERE gender = ? AND is_active = 1 AND email IS NOT NULL AND email <> ''
@@ -25,39 +58,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$gender]);
         $students = $stmt->fetchAll();
 
-        $sent = 0; $failed = 0; $errors = [];
-        foreach ($students as $s) {
-            // Expire any old unused links for this student
-            $pdo->prepare("DELETE FROM magic_links WHERE student_id = ? AND used_at IS NULL")
-                ->execute([$s['id']]);
-
-            $raw  = bin2hex(random_bytes(32));
-            $hash = hash('sha256', $raw);
-            $pdo->prepare("
-                INSERT INTO magic_links (student_id, token_hash, expires_at, created_by)
-                VALUES (?, ?, ?, ?)
-            ")->execute([
-                $s['id'], $hash,
-                date('Y-m-d H:i:s', strtotime('+7 days')),
-                $_SESSION['user_id'],
-            ]);
-
-            $link = SITE_URL . '/student/book.php?token=' . $raw;
-            if (send_magic_link_email($s['email'], $s['full_name'], $link)) {
-                $sent++;
-            } else {
-                $failed++;
-                $errors[] = $s['email'];
-            }
-        }
-        audit_log($_SESSION['user_id'], null, 'links_send_all', "Sent: $sent, failed: $failed ($gender)");
-        $msg = "Sent to $sent student" . ($sent === 1 ? '' : 's') . ".";
-        if ($failed > 0) $msg .= " Failed: $failed (".implode(', ', array_slice($errors, 0, 3)).")";
-        $_SESSION['flash'] = ['type' => $failed > 0 ? 'warning' : 'success', 'msg' => $msg];
-        redirect(APP_BASE . '/user/send_links.php');
+        echo json_encode([
+            'ok'         => true,
+            'students'   => $students,
+            'semester'   => ['id'=>$bookingSem['id'], 'name'=>$bookingSem['name']],
+        ]);
+        exit;
     }
 
-    // Resend to one student
+    // Send one (called per row from JS)
+    if ($action === 'send_one_ajax') {
+        header('Content-Type: application/json');
+        $sid = (int)($_POST['student_id'] ?? 0);
+
+        $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ? AND gender = ?");
+        $stmt->execute([$sid, $gender]);
+        $s = $stmt->fetch();
+        if (!$s) { echo json_encode(['ok'=>false, 'error'=>'Student not found']); exit; }
+
+        // wipe any old unused link
+        $pdo->prepare("DELETE FROM magic_links WHERE student_id = ? AND used_at IS NULL")
+            ->execute([$sid]);
+
+        $raw  = bin2hex(random_bytes(32));
+        $hash = hash('sha256', $raw);
+        $pdo->prepare("
+            INSERT INTO magic_links (student_id, semester_id, token_hash, expires_at, created_by)
+            VALUES (?, ?, ?, ?, ?)
+        ")->execute([
+            $sid, (int)$bookingSem['id'], $hash,
+            date('Y-m-d H:i:s', strtotime('+7 days')),
+            $_SESSION['user_id'],
+        ]);
+
+        $link = SITE_URL . '/student/book.php?token=' . $raw;
+        $ok   = send_magic_link_email($s['email'], $s['full_name'], $link);
+
+        if ($ok) {
+            audit_log($_SESSION['user_id'], $sid, 'link_send_one', "Sent link to {$s['reg_number']} (sem {$bookingSem['name']})");
+        }
+
+        echo json_encode([
+            'ok'    => $ok,
+            'email' => $s['email'],
+            'name'  => $s['full_name'],
+        ]);
+        exit;
+    }
+
+    // ---------- RESEND SINGLE (classic POST) ----------
     if ($action === 'send_one') {
         $sid = (int)($_POST['student_id'] ?? 0);
         $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ? AND gender = ?");
@@ -68,9 +117,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $raw  = bin2hex(random_bytes(32));
             $hash = hash('sha256', $raw);
             $pdo->prepare("
-                INSERT INTO magic_links (student_id, token_hash, expires_at, created_by)
-                VALUES (?, ?, ?, ?)
-            ")->execute([$sid, $hash, date('Y-m-d H:i:s', strtotime('+7 days')), $_SESSION['user_id']]);
+                INSERT INTO magic_links (student_id, semester_id, token_hash, expires_at, created_by)
+                VALUES (?, ?, ?, ?, ?)
+            ")->execute([
+                $sid, (int)$bookingSem['id'], $hash,
+                date('Y-m-d H:i:s', strtotime('+7 days')),
+                $_SESSION['user_id'],
+            ]);
 
             $link = SITE_URL . '/student/book.php?token=' . $raw;
             $ok = send_magic_link_email($s['email'], $s['full_name'], $link);
@@ -80,13 +133,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'msg'  => $ok ? 'Link sent to '.h($s['email']) : 'Failed to send email.',
             ];
         }
-        redirect(APP_BASE . '/user/send_links.php');
+        redirect(APP_BASE.'/user/send_links.php');
     }
 }
 
-// ---------- STUDENT LIST ----------
+// ---------- LIST ----------
 $search = trim($_GET['q'] ?? '');
-$filterLink = $_GET['link'] ?? ''; // '', 'sent', 'used', 'none'
+$filterLink = $_GET['link'] ?? '';
 
 $where = " WHERE s.gender = ? AND s.is_active = 1"; $params = [$gender];
 if ($search !== '') {
@@ -113,7 +166,6 @@ $stmt = $pdo->prepare("
 $stmt->execute($params);
 $students = $stmt->fetchAll();
 
-// Stats
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM students WHERE gender = ? AND is_active = 1");
 $stmt->execute([$gender]);
 $total = (int)$stmt->fetchColumn();
@@ -144,15 +196,18 @@ $used = (int)$stmt->fetchColumn();
                 <div>
                     <h4 class="mb-1"><i class="fas fa-paper-plane text-primary me-2"></i>Send Magic Links</h4>
                     <p class="text-muted small mb-0">
-                        <?= h($gender) ?> wing · <?= number_format($total) ?> active student<?= $total===1?'':'s' ?>
+                        <?= h($gender) ?> wing · <?= number_format($total) ?> student<?= $total===1?'':'s' ?>
+                        <?php if ($bookingSem): ?>
+                            · booking for <strong><?= h($bookingSem['name']) ?></strong>
+                        <?php endif; ?>
                     </p>
                 </div>
-                <form method="post" onsubmit="return confirm('Send magic links to ALL <?= h($gender) ?> students? This emails everyone.');">
-                    <input type="hidden" name="action" value="send_all">
-                    <button class="btn btn-primary">
-                        <i class="fas fa-paper-plane me-1"></i>Send to All (<?= $total ?>)
-                    </button>
-                </form>
+                <button class="btn btn-primary" id="sendAllBtn" <?= $canSend ? '' : 'disabled' ?>
+                        data-bs-toggle="<?= $canSend ? '' : 'tooltip' ?>"
+                        title="<?= $canSend ? '' : 'Your phase window is not active yet' ?>">
+                    <i class="fas fa-paper-plane me-1"></i>
+                    Send to All (<?= $total ?>)
+                </button>
             </div>
 
             <?php if ($flash): ?>
@@ -160,6 +215,34 @@ $used = (int)$stmt->fetchColumn();
                     <?= h($flash['msg']) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             <?php endif; ?>
+
+            <?php if (!$canSend): ?>
+                <div class="alert alert-warning d-flex align-items-start">
+                    <i class="fas fa-lock me-2 mt-1"></i>
+                    <div class="small">
+                        <strong>Sending disabled.</strong>
+                        Your wing's phase window is not active.
+                        Set dates in <a href="<?= APP_BASE ?>/user/phase_windows.php">Phase Windows</a> to enable.
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <!-- Live progress panel (hidden until send starts) -->
+            <div id="progressPanel" class="card border-0 shadow-sm mb-3 d-none">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div>
+                            <strong id="progressTitle">Sending...</strong>
+                            <div class="small text-muted" id="progressDetail">Starting...</div>
+                        </div>
+                        <div class="fs-4 fw-bold text-primary" id="progressCount">0/0</div>
+                    </div>
+                    <div class="progress mb-2" style="height:8px;">
+                        <div class="progress-bar" id="progressBar" style="width:0%"></div>
+                    </div>
+                    <div class="small text-muted" id="progressLog"></div>
+                </div>
+            </div>
 
             <!-- Stats -->
             <div class="row g-3 mb-3">
@@ -220,21 +303,21 @@ $used = (int)$stmt->fetchColumn();
                             </thead>
                             <tbody>
                             <?php foreach ($students as $s): ?>
-                                <tr>
+                                <tr data-sid="<?= (int)$s['id'] ?>" data-name="<?= h($s['full_name']) ?>">
                                     <td>
                                         <div class="fw-semibold"><?= h($s['full_name']) ?></div>
                                         <div class="text-muted" style="font-size:.72rem;"><?= h($s['reg_number']) ?></div>
                                     </td>
                                     <td class="small text-muted"><?= h($s['email']) ?></td>
                                     <td>
-                                        <span class="badge bg-light text-dark"><?= (int)$s['link_count'] ?></span>
+                                        <span class="badge bg-light text-dark link-count"><?= (int)$s['link_count'] ?></span>
                                         <?php if ($s['pending_expires']): ?>
                                             <div class="text-muted" style="font-size:.7rem;">
                                                 <i class="fas fa-clock me-1"></i>expires <?= date('M j', strtotime($s['pending_expires'])) ?>
                                             </div>
                                         <?php endif; ?>
                                     </td>
-                                    <td>
+                                    <td class="status-cell">
                                         <?php if ($s['last_used']): ?>
                                             <span class="badge bg-success">Used</span>
                                         <?php elseif ($s['pending_expires']): ?>
@@ -244,14 +327,15 @@ $used = (int)$stmt->fetchColumn();
                                         <?php endif; ?>
                                     </td>
                                     <td class="text-end">
-                                        <form method="post" class="d-inline"
-                                              onsubmit="return confirm('Send/resend magic link to <?= h(addslashes($s['full_name'])) ?>?');">
-                                            <input type="hidden" name="action" value="send_one">
-                                            <input type="hidden" name="student_id" value="<?= (int)$s['id'] ?>">
-                                            <button class="btn btn-sm btn-outline-primary" title="Send / Resend">
-                                                <i class="fas fa-paper-plane"></i>
-                                            </button>
-                                        </form>
+                                        <button type="button"
+                                                class="btn btn-sm btn-outline-primary send-one-btn"
+                                                data-sid="<?= (int)$s['id'] ?>"
+                                                data-name="<?= h($s['full_name']) ?>"
+                                                data-email="<?= h($s['email']) ?>"
+                                                <?= $canSend ? '' : 'disabled' ?>>
+                                            <span class="spin d-none"><span class="spinner-border spinner-border-sm"></span></span>
+                                            <i class="fas fa-paper-plane"></i>
+                                        </button>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -264,3 +348,151 @@ $used = (int)$stmt->fetchColumn();
             <div class="pb-4"></div>
         </main>
 <?php include __DIR__ . '/partial/footer.php'; ?>
+
+<script>
+const SEND_ALL_START = 'send_all_start';
+const SEND_ONE_AJAX  = 'send_one_ajax';
+const CSRF_URL       = 'send_links.php';
+
+// ---------- Send-one (row-level spinner) ----------
+document.querySelectorAll('.send-one-btn').forEach(btn => {
+    btn.addEventListener('click', async function () {
+        if (!confirm('Send magic link to ' + this.dataset.name + '?')) return;
+
+        const row = this.closest('tr');
+        const spin = this.querySelector('.spin');
+        const icon = this.querySelector('.fa-paper-plane');
+        const email = this.dataset.email;
+        const sid = this.dataset.sid;
+
+        spin.classList.remove('d-none');
+        icon.classList.add('d-none');
+        this.disabled = true;
+
+        // Show live text in status cell
+        const statusCell = row.querySelector('.status-cell');
+        const prevStatus = statusCell.innerHTML;
+        statusCell.innerHTML = '<span class="text-primary small">Sending to ' + email + '...</span>';
+
+        try {
+            const fd = new FormData();
+            fd.append('action', SEND_ONE_AJAX);
+            fd.append('student_id', sid);
+
+            const res = await fetch(CSRF_URL, { method: 'POST', body: fd });
+            const data = await res.json();
+
+            if (data.ok) {
+                statusCell.innerHTML = '<span class="badge bg-info text-dark">Sent</span>';
+                row.querySelector('.link-count').textContent =
+                    (parseInt(row.querySelector('.link-count').textContent) || 0) + 1;
+            } else {
+                statusCell.innerHTML = '<span class="badge bg-danger">Failed</span>';
+                setTimeout(() => { statusCell.innerHTML = prevStatus; }, 2000);
+            }
+        } catch (e) {
+            statusCell.innerHTML = '<span class="badge bg-danger">Error</span>';
+            setTimeout(() => { statusCell.innerHTML = prevStatus; }, 2000);
+        }
+
+        spin.classList.add('d-none');
+        icon.classList.remove('d-none');
+        this.disabled = false;
+    });
+});
+
+// ---------- Send All (batch with progress) ----------
+document.getElementById('sendAllBtn')?.addEventListener('click', async function () {
+    if (!confirm('Send magic links to ALL students in your wing? This emails everyone.')) return;
+
+    this.disabled = true;
+    this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Sending...';
+
+    const panel = document.getElementById('progressPanel');
+    panel.classList.remove('d-none');
+
+    const title   = document.getElementById('progressTitle');
+    const detail  = document.getElementById('progressDetail');
+    const counter = document.getElementById('progressCount');
+    const bar     = document.getElementById('progressBar');
+    const log     = document.getElementById('progressLog');
+
+    // 1. Kick off — get the list
+    let students = [];
+    let semesterName = '';
+    try {
+        const fd = new FormData();
+        fd.append('action', SEND_ALL_START);
+        const res = await fetch(CSRF_URL, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!data.ok) throw new Error('Failed to start');
+        students = data.students || [];
+        semesterName = data.semester?.name || '';
+    } catch (e) {
+        title.textContent = 'Failed to start';
+        this.disabled = false;
+        this.innerHTML = '<i class="fas fa-paper-plane me-1"></i>Send to All';
+        return;
+    }
+
+    title.textContent = 'Sending to ' + students.length + ' students';
+    detail.textContent = 'Booking for ' + semesterName;
+
+    let ok = 0, failed = 0;
+
+    // 2. Loop send one at a time
+    for (let i = 0; i < students.length; i++) {
+        const s = students[i];
+
+        detail.textContent = 'Sending to ' + s.email + '...';
+
+        try {
+            const fd = new FormData();
+            fd.append('action', SEND_ONE_AJAX);
+            fd.append('student_id', s.id);
+            const res = await fetch(CSRF_URL, { method: 'POST', body: fd });
+            const data = await res.json();
+
+            if (data.ok) {
+                ok++;
+                log.innerHTML = '<i class="fas fa-check text-success me-1"></i>' + s.full_name + ' — sent';
+            } else {
+                failed++;
+                log.innerHTML = '<i class="fas fa-times text-danger me-1"></i>' + s.full_name + ' — failed';
+            }
+        } catch (e) {
+            failed++;
+        }
+
+        const done = i + 1;
+        counter.textContent = done + '/' + students.length;
+        bar.style.width = (done / students.length * 100) + '%';
+
+        // Row-level UI update
+        const row = document.querySelector('tr[data-sid="' + s.id + '"]');
+        if (row) {
+            const statusCell = row.querySelector('.status-cell');
+            if (statusCell) {
+                statusCell.innerHTML = failed > ok
+                    ? '<span class="badge bg-danger">Failed</span>'
+                    : '<span class="badge bg-info text-dark">Sent</span>';
+            }
+            const lc = row.querySelector('.link-count');
+            if (lc) lc.textContent = (parseInt(lc.textContent) || 0) + 1;
+        }
+
+        // Small delay so server doesn't choke (SMTP rate limits)
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    title.textContent = 'Done — ' + ok + ' sent, ' + failed + ' failed';
+    detail.textContent = ok + ' students now have a link for ' + semesterName;
+    bar.classList.add('bg-success');
+    bar.style.width = '100%';
+
+    this.disabled = false;
+    this.innerHTML = '<i class="fas fa-paper-plane me-1"></i>Send to All';
+
+    setTimeout(() => location.reload(), 2500);
+});
+</script>
