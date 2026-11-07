@@ -22,6 +22,123 @@ if ($root === '' || $root === '\\') $root = '';
         e.preventDefault();
         document.body.classList.toggle('sb-sidenav-toggled');
     });
+
+    // Reset any spinning buttons when the page is restored from bfcache
+window.addEventListener('pageshow', function (event) {
+    // Only reset when restored from cache (event.persisted = true)
+    // OR just run unconditionally — harmless on fresh loads
+    document.querySelectorAll('.nav-btn').forEach(el => {
+        el.dataset.loading = '';
+        el.style.pointerEvents = '';
+        el.style.opacity = '';
+        const label = el.querySelector('.btn-label');
+        const spin  = el.querySelector('.btn-spin');
+        if (label) label.classList.remove('d-none');
+        if (spin)  spin.classList.add('d-none');
+        if (el.tagName === 'BUTTON') el.disabled = false;
+    });
+});
+
+// ============================================================
+// Reset any spinners when back/forward restores the page from bfcache
+// ============================================================
+function resetNavButtons() {
+    // .nav-btn spinners
+    document.querySelectorAll('.nav-btn').forEach(el => {
+        el.dataset.loading = '';
+        el.style.pointerEvents = '';
+        el.style.opacity = '';
+        const label = el.querySelector('.btn-label');
+        const spin  = el.querySelector('.btn-spin');
+        if (label) label.classList.remove('d-none');
+        if (spin)  spin.classList.add('d-none');
+        if (el.tagName === 'BUTTON') el.disabled = false;
+    });
+
+    // sidebar link spinners
+    document.querySelectorAll('.sb-sidenav-menu a.nav-link').forEach(a => {
+        a.classList.remove('loading');
+        const spinner = a.querySelector('.side-spin');
+        if (spinner) spinner.remove();
+    });
+
+    // top loading bar
+    document.querySelectorAll('.sb-loading-bar').forEach(el => el.remove());
+}
+window.addEventListener('pageshow', resetNavButtons);
+document.addEventListener('DOMContentLoaded', resetNavButtons);
+
+// ============================================================
+// Sidebar link loading — show a thin animated strip above the
+// sidebar and a small spinner on the clicked link
+// ============================================================
+function attachSidebarLoading() {
+    const sidebar = document.getElementById('layoutSidenav_nav');
+    if (!sidebar) return;
+
+    sidebar.querySelectorAll('a.nav-link[href]').forEach(link => {
+        // Skip collapse togglers (they have data-bs-toggle)
+        if (link.dataset.bsToggle) return;
+        // Skip already-hooked links
+        if (link.dataset.sideLoader) return;
+        link.dataset.sideLoader = '1';
+
+        link.addEventListener('click', function (e) {
+            const href = this.getAttribute('href');
+            if (!href || href.startsWith('#') || href.startsWith('javascript')) return;
+
+            // Add top strip
+            const topStrip = document.createElement('div');
+            topStrip.className = 'sb-loading-bar';
+            topStrip.style.cssText = `
+                position:fixed; top:0; left:0; right:0; height:3px;
+                background:linear-gradient(90deg,#003366,#ffc107,#003366);
+                background-size:200% 100%;
+                animation: sbStripMove 1.1s linear infinite;
+                z-index:1100;
+                box-shadow:0 1px 4px rgba(0,51,102,.35);
+            `;
+            document.body.appendChild(topStrip);
+
+            // Add spinner to this link
+            this.classList.add('loading');
+            if (!this.querySelector('.side-spin')) {
+                const s = document.createElement('span');
+                s.className = 'side-spin ms-auto';
+                s.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:.75rem;height:.75rem;border-width:.15em;color:#ffc107;"></span>';
+                this.appendChild(s);
+            }
+            this.style.pointerEvents = 'none';
+            this.style.opacity = '0.85';
+        });
+    });
+}
+
+// Add keyframes once
+(function injectKeyframes() {
+    if (document.getElementById('sbLoaderStyles')) return;
+    const style = document.createElement('style');
+    style.id = 'sbLoaderStyles';
+    style.textContent = `
+        @keyframes sbStripMove {
+            0%   { background-position: 0% 0; }
+            100% { background-position: -200% 0; }
+        }
+        .sb-sidenav-menu a.nav-link.loading .side-spin {
+            display: inline-block;
+            animation: none;
+        }
+    `;
+    document.head.appendChild(style);
+})();
+
+document.addEventListener('DOMContentLoaded', attachSidebarLoading);
+
+// sidebar toggle
+document.getElementById('sidebarToggle')?.addEventListener('click', function (e) {
+    e.preventDefault();
+    document.body.classList.toggle('sb-sidenav-toggled');
+});
 </script>
 </body>
 </html>

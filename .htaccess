@@ -1,0 +1,26 @@
+# ==========================================================
+# ComfortBook — .htaccess
+# ==========================================================
+
+# Error pages — absolute paths from server root
+# (Only 3 lines to update when you move/deploy)
+ErrorDocument 403 /projects/booking/error/403.html
+ErrorDocument 404 /projects/booking/error/404.html
+ErrorDocument 500 /projects/booking/error/500.html
+
+# ---------- Pretty URLs ----------
+RewriteEngine On
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.*)$ $1.php [L,QSA]
+
+RewriteCond %{REQUEST_METHOD} GET
+RewriteCond %{THE_REQUEST} \s/+([^.]+)\.php [NC]
+RewriteRule ^ /%1 [R=301,L]
+
+RewriteCond %{REQUEST_METHOD} POST
+RewriteCond %{REQUEST_URI} !\.php$
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.*)$ $1.php [L]

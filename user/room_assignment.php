@@ -33,12 +33,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $rid = (int)($_POST['room_id'] ?? 0);
 
         if ($sid > 0 && $rid > 0) {
-            // Load student (must be in wing)
             $stmt = $pdo->prepare("SELECT * FROM students WHERE id=? AND gender=? AND is_active=1");
             $stmt->execute([$sid, $gender]);
             $student = $stmt->fetch();
 
-            // Load room (must be in wing)
             $stmt = $pdo->prepare("
                 SELECT r.*, b.name AS block_name
                 FROM rooms r JOIN blocks b ON b.id = r.block_id
@@ -53,26 +51,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['flash'] = ['type'=>'danger','msg'=>'Room not found.'];
             } else {
                 $occ = room_occupancy($pdo, $rid);
-                // If already occupying this room, that's fine
                 $alreadyHere = ((int)$student['current_room_id'] === $rid);
+
                 if (!$alreadyHere && $occ >= (int)$room['capacity']) {
                     $_SESSION['flash'] = ['type'=>'danger','msg'=>'Room is full ('.$occ.'/'.$room['capacity'].').'];
                 } else {
                     try {
                         $pdo->beginTransaction();
-
                         $oldRoomId = (int)($student['current_room_id'] ?? 0);
 
-                        // Free old room if different and no one else is in it
                         if ($oldRoomId && $oldRoomId !== $rid) {
                             $pdo->prepare("UPDATE students SET current_room_id=NULL WHERE id=?")->execute([$sid]);
-                            $remaining = room_occupancy($pdo, $oldRoomId);
-                            if ($remaining === 0) {
+                            if (room_occupancy($pdo, $oldRoomId) === 0) {
                                 $pdo->prepare("UPDATE rooms SET status='available_p2' WHERE id=?")->execute([$oldRoomId]);
                             }
                         }
 
-                        // Assign new room
                         $pdo->prepare("UPDATE students SET current_room_id=?, placed=1 WHERE id=?")
                             ->execute([$rid, $sid]);
                         $pdo->prepare("UPDATE rooms SET status='occupied' WHERE id=?")->execute([$rid]);
@@ -88,7 +82,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             . " ({$room['room_number']})"
                         );
 
-                        // Welcome email on first assignment (not on internal move)
                         if (!$isMove) {
                             @send_welcome_email(
                                 $student['email'], $student['full_name'],
@@ -109,7 +102,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
         }
-        redirect('/room_assignment.php');
+        redirect(APP_BASE . '/user/room_assignment.php');
     }
 
     // ---------- UNASSIGN ----------
@@ -126,8 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $roomId = (int)$student['current_room_id'];
 
                     $pdo->prepare("UPDATE students SET current_room_id=NULL, placed=0 WHERE id=?")->execute([$sid]);
-                    $remaining = room_occupancy($pdo, $roomId);
-                    if ($remaining === 0) {
+                    if (room_occupancy($pdo, $roomId) === 0) {
                         $pdo->prepare("UPDATE rooms SET status='available_p2' WHERE id=?")->execute([$roomId]);
                     }
 
@@ -141,15 +133,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
         }
-        redirect('room_assignment.php');
+        redirect(APP_BASE . '/user/room_assignment.php');
     }
 
-    // ---------- BULK ASSIGN (auto-pick for all unplaced) ----------
+    // ---------- BULK ASSIGN ----------
     if ($action === 'bulk_assign') {
         try {
             $pdo->beginTransaction();
 
-            // Unplaced students in wing
             $stmt = $pdo->prepare("
                 SELECT id, full_name, reg_number, email
                 FROM students
@@ -161,7 +152,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $assigned = 0;
             foreach ($unplaced as $s) {
-                // Best room: packed first, then tightest
                 $stmt = $pdo->prepare("
                     SELECT r.id, r.room_number, r.capacity, b.name AS block_name,
                         (SELECT COUNT(*) FROM students s2 WHERE s2.current_room_id=r.id AND s2.is_active=1) AS occ
@@ -188,7 +178,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->rollBack();
             $_SESSION['flash'] = ['type'=>'danger','msg'=>'Bulk assign failed: '.$e->getMessage()];
         }
-        redirect('room_assignment.php');
+        redirect(APP_BASE . '/user/room_assignment.php');
     }
 }
 
@@ -197,7 +187,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ============================================================
 $search = trim($_GET['q'] ?? '');
 
-// Unplaced students (wing)
+// Unplaced students
 $uWhere = ' WHERE s.gender=? AND s.is_active=1 AND s.placed=0';
 $uParams = [$gender];
 if ($search !== '') {
@@ -212,7 +202,7 @@ $stmt = $pdo->prepare("
 $stmt->execute($uParams);
 $unplaced = $stmt->fetchAll();
 
-// Placed students (wing)
+// Placed students
 $pWhere = ' WHERE s.gender=? AND s.is_active=1 AND s.placed=1';
 $pParams = [$gender];
 if ($search !== '') {
@@ -229,7 +219,7 @@ $stmt = $pdo->prepare("
 $stmt->execute($pParams);
 $placed = $stmt->fetchAll();
 
-// Available rooms (with occupancy)
+// All rooms with occupancy
 $stmt = $pdo->prepare("
     SELECT r.*, b.name AS block_name,
         (SELECT COUNT(*) FROM students s WHERE s.current_room_id=r.id AND s.is_active=1) AS occ
@@ -247,7 +237,7 @@ foreach ($allRooms as $r) {
     else $fullRooms++;
 }
 
-// Recent activity (this wing)
+// Recent activity
 $stmt = $pdo->prepare("
     SELECT al.action, al.details, al.created_at, u.full_name AS by_name
     FROM audit_log al
@@ -276,30 +266,46 @@ $recentActivity = $stmt->fetchAll();
                         <?= count($availableRooms) ?> rooms with space
                     </p>
                 </div>
-                <div class="d-flex gap-2 mt-2 mt-md-0">
-                    <form method="post"
-                          onsubmit="return confirm('Auto-assign ALL unplaced <?= h($gender) ?> students to available rooms?');">
+                <div class="d-flex gap-2 mt-2 mt-md-0 align-items-center">
+                    <form method="post" id="bulkForm">
                         <input type="hidden" name="action" value="bulk_assign">
-                        <button class="btn btn-success btn-sm" <?= (empty($unplaced) || empty($availableRooms)) ? 'disabled' : '' ?>>
-                            <i class="fas fa-bolt me-1"></i>Bulk Auto-Assign
+                        <button type="submit"
+                                class="btn btn-success btn-sm bulk-btn"
+                                <?= (empty($unplaced) || empty($availableRooms)) ? 'disabled' : '' ?>
+                                data-count="<?= count($unplaced) ?>">
+                            <span class="btn-label"><i class="fas fa-bolt me-1"></i>Bulk Auto-Assign</span>
+                            <span class="btn-spin d-none">
+                                <span class="spinner-border spinner-border-sm me-1"></span>
+                                Assigning <?= count($unplaced) ?>...
+                            </span>
                         </button>
                     </form>
-                    <form method="get" class="d-flex gap-2">
-                        <input type="text" name="q" class="form-control form-control-sm"
-                               value="<?= h($search) ?>" placeholder="Search name or reg #">
-                        <button class="btn btn-outline-primary btn-sm"><i class="fas fa-search"></i></button>
+                    <form method="get" class="d-flex gap-2" id="searchForm">
+                        <div class="position-relative">
+                            <input type="text" name="q" id="searchInput"
+                                   class="form-control form-control-sm"
+                                   value="<?= h($search) ?>" placeholder="Search name or reg #"
+                                   autocomplete="off">
+                            <span id="searchSpinner" class="position-absolute top-50 end-0 translate-middle-y me-2 d-none">
+                                <span class="spinner-border spinner-border-sm text-primary"></span>
+                            </span>
+                        </div>
                         <?php if ($search): ?>
-                        <a href="room_assignment.php" class="btn btn-outline-secondary btn-sm"><i class="fas fa-times"></i></a>
+                        <a href="room_assignment.php" class="btn btn-outline-secondary btn-sm">
+                            <i class="fas fa-times"></i>
+                        </a>
                         <?php endif; ?>
                     </form>
                 </div>
             </div>
 
+            <!-- Flash toast -->
             <?php if ($flash): ?>
-                <div class="alert alert-<?= h($flash['type']) ?> alert-dismissible fade show">
-                    <?= h($flash['msg']) ?>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
+            <div class="alert alert-<?= h($flash['type']) ?> alert-dismissible fade show d-flex align-items-center auto-dismiss">
+                <i class="fas fa-<?= $flash['type']==='success' ? 'check-circle' : 'exclamation-circle' ?> me-2"></i>
+                <div class="flex-grow-1"><?= h($flash['msg']) ?></div>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
             <?php endif; ?>
 
             <!-- KPI strip -->
@@ -361,13 +367,13 @@ $recentActivity = $stmt->fetchAll();
                                                         <?php endif; ?>
                                                     </div>
                                                 </div>
-                                                <button class="btn btn-sm btn-primary flex-shrink-0"
+                                                <button class="btn btn-sm btn-primary flex-shrink-0 assign-btn"
                                                         data-bs-toggle="modal"
                                                         data-bs-target="#assignModal"
                                                         data-sid="<?= (int)$s['id'] ?>"
                                                         data-name="<?= h($s['full_name']) ?>"
                                                         data-mode="assign">
-                                                    <i class="fas fa-bed me-1"></i>Assign
+                                                    <span class="btn-label"><i class="fas fa-bed me-1"></i>Assign</span>
                                                 </button>
                                             </div>
                                         </div>
@@ -463,22 +469,21 @@ $recentActivity = $stmt->fetchAll();
                                     <td class="small"><?= h($s['room_number']) ?></td>
                                     <td class="small text-muted"><?= h($s['block_name']) ?></td>
                                     <td class="text-end">
-                                        <button class="btn btn-sm btn-outline-primary"
+                                        <button class="btn btn-sm btn-outline-primary move-btn"
                                                 data-bs-toggle="modal"
                                                 data-bs-target="#assignModal"
                                                 data-sid="<?= (int)$s['id'] ?>"
                                                 data-name="<?= h($s['full_name']) ?>"
                                                 data-mode="move">
-                                            <i class="fas fa-exchange-alt"></i> Move
+                                            <span class="btn-label"><i class="fas fa-exchange-alt me-1"></i>Move</span>
                                         </button>
-                                        <form method="post" class="d-inline"
-                                              onsubmit="return confirm('Unassign <?= h(addslashes($s['full_name'])) ?>? The room will be freed if empty.');">
-                                            <input type="hidden" name="action" value="unassign">
-                                            <input type="hidden" name="student_id" value="<?= (int)$s['id'] ?>">
-                                            <button class="btn btn-sm btn-outline-warning">
-                                                <i class="fas fa-unlink"></i>
-                                            </button>
-                                        </form>
+                                        <button class="btn btn-sm btn-outline-warning unassign-btn"
+                                                data-sid="<?= (int)$s['id'] ?>"
+                                                data-name="<?= h($s['full_name']) ?>"
+                                                data-room="<?= h($s['room_number']) ?>">
+                                            <span class="btn-label"><i class="fas fa-unlink"></i></span>
+                                            <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm"></span></span>
+                                        </button>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -523,7 +528,7 @@ $recentActivity = $stmt->fetchAll();
 <!-- Assign / Move modal -->
 <div class="modal fade" id="assignModal" tabindex="-1">
     <div class="modal-dialog modal-lg"><div class="modal-content">
-        <form method="post">
+        <form method="post" id="assignForm">
             <div class="modal-header">
                 <h5 class="modal-title" id="assignModalTitle">Assign Room</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -570,8 +575,42 @@ $recentActivity = $stmt->fetchAll();
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button class="btn btn-primary" <?= empty($availableRooms) ? 'disabled' : '' ?>>
-                    <i class="fas fa-check me-1"></i>Confirm
+                <button type="submit" class="btn btn-primary" id="assignSubmit" <?= empty($availableRooms) ? 'disabled' : '' ?>>
+                    <span class="btn-label"><i class="fas fa-check me-1"></i>Confirm</span>
+                    <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm me-1"></span>Assigning...</span>
+                </button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<!-- Unassign modal -->
+<div class="modal fade" id="unassignModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <form method="post" id="unassignForm">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-unlink text-warning me-2"></i>Unassign Student
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">
+                    Remove <strong id="unassignName"></strong> from
+                    <strong id="unassignRoom"></strong>?
+                </p>
+                <div class="alert alert-warning small mb-0">
+                    <i class="fas fa-exclamation-triangle me-1"></i>
+                    The student becomes unplaced. The room is freed if nobody else occupies it.
+                </div>
+                <input type="hidden" name="action" value="unassign">
+                <input type="hidden" name="student_id" id="unassignSid">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-warning" id="unassignSubmit">
+                    <span class="btn-label"><i class="fas fa-unlink me-1"></i>Unassign</span>
+                    <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm me-1"></span>Removing...</span>
                 </button>
             </div>
         </form>
@@ -579,12 +618,69 @@ $recentActivity = $stmt->fetchAll();
 </div>
 
 <?php include __DIR__ . '/partial/footer.php'; ?>
+
 <script>
+// ---------- Auto-dismiss flash ----------
+document.querySelectorAll('.auto-dismiss').forEach(el => {
+    setTimeout(() => bootstrap.Alert.getOrCreateInstance(el).close(), 4000);
+});
+
+// ---------- Debounced search ----------
+let searchTimer = null;
+const searchInput   = document.getElementById('searchInput');
+const searchSpinner = document.getElementById('searchSpinner');
+
+searchInput?.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchSpinner.classList.remove('d-none');
+    searchTimer = setTimeout(() => document.getElementById('searchForm').submit(), 500);
+});
+
+// ---------- Bulk auto-assign spinner + confirm ----------
+document.getElementById('bulkForm')?.addEventListener('submit', function (e) {
+    const btn = this.querySelector('.bulk-btn');
+    const count = btn.dataset.count || '0';
+    if (!confirm(`Auto-assign ALL ${count} unplaced students to available rooms?`)) {
+        e.preventDefault();
+        return;
+    }
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
+});
+
+// ---------- Assign modal context ----------
 document.getElementById('assignModal')?.addEventListener('show.bs.modal', function (e) {
     const btn = e.relatedTarget;
     document.getElementById('assignSid').value = btn.dataset.sid;
     document.getElementById('assignName').textContent = btn.dataset.name;
     document.getElementById('assignModalTitle').textContent =
         btn.dataset.mode === 'move' ? 'Move to Another Room' : 'Assign Room';
+});
+
+// ---------- Assign submit spinner ----------
+document.getElementById('assignForm')?.addEventListener('submit', () => {
+    const btn = document.getElementById('assignSubmit');
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
+});
+
+// ---------- Unassign modal context ----------
+document.querySelectorAll('.unassign-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('unassignSid').value = btn.dataset.sid;
+        document.getElementById('unassignName').textContent = btn.dataset.name;
+        document.getElementById('unassignRoom').textContent = btn.dataset.room;
+        new bootstrap.Modal(document.getElementById('unassignModal')).show();
+    });
+});
+
+// ---------- Unassign submit spinner ----------
+document.getElementById('unassignForm')?.addEventListener('submit', () => {
+    const btn = document.getElementById('unassignSubmit');
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
 });
 </script>

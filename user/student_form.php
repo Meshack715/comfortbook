@@ -33,7 +33,6 @@ function pick_best_room(PDO $pdo, string $gender, ?int $excludeRoom = null): ?ar
     $room = $stmt->fetch();
 
     if (!$room && $excludeRoom !== null) {
-        // fallback: no available room, use the existing one (edit case)
         $stmt = $pdo->prepare("
             SELECT r.id, r.room_number, r.capacity, b.name AS block_name,
                 (SELECT COUNT(*) FROM students s WHERE s.current_room_id = r.id AND s.is_active = 1) AS occ
@@ -84,22 +83,23 @@ $form = $isEdit ? [
 
 // ------------------------------------------------------------
 // HANDLE POSTS
-//   - action=autopick_gender  → auto-pick a room, show it, no save
-//   - action=save             → persist student
-//   - action=change_room      → set room id from modal picker
 // ------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    // keep posted values
     foreach (['reg_number','full_name','email','phone','course'] as $k) $form[$k] = trim($_POST[$k] ?? '');
     $form['gender']          = $_POST['gender'] ?? '';
     $form['year_of_study']   = (int)($_POST['year_of_study'] ?? 1);
     $form['current_room_id'] = (int)($_POST['current_room_id'] ?? 0);
     $form['is_active']       = isset($_POST['is_active']) ? 1 : 0;
 
-    // ----- AUTO-PICK (no save) -----
-    if ($action === 'autopick_gender' && in_array($form['gender'], ['Male','Female'], true)) {
+    // On edit — ignore any room value from POST; keep the student's existing room
+    if ($isEdit) {
+        $form['current_room_id'] = (int)($student['current_room_id'] ?? 0);
+    }
+
+    // ----- AUTO-PICK (create only) -----
+    if (!$isEdit && $action === 'autopick_gender' && in_array($form['gender'], ['Male','Female'], true)) {
         $best = pick_best_room($pdo, $form['gender']);
         $form['current_room_id'] = $best ? (int)$best['id'] : 0;
         // fall through to render
@@ -113,8 +113,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!in_array($form['gender'], ['Male','Female'], true)) $errors[] = 'Please select gender.';
         if ($form['year_of_study'] < 1 || $form['year_of_study'] > 6) $errors[] = 'Year 1–6.';
 
-        // Room sanity
-        if (!$errors && $form['current_room_id'] > 0) {
+        // Room sanity — only on CREATE (edit never touches room)
+        if (!$errors && !$isEdit && $form['current_room_id'] > 0) {
             $stmt = $pdo->prepare("
                 SELECT r.gender, r.capacity,
                     (SELECT COUNT(*) FROM students s WHERE s.current_room_id=r.id AND s.is_active=1) occ
@@ -146,26 +146,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->beginTransaction();
 
                 if ($isEdit) {
-                    $oldRoom = (int)($student['current_room_id'] ?? 0);
-                    if ($oldRoom && $oldRoom !== (int)$roomId) {
-                        $pdo->prepare("
-                            UPDATE rooms SET status='available_p2'
-                            WHERE id=? AND NOT EXISTS (
-                                SELECT 1 FROM students WHERE current_room_id=? AND id<>?
-                            )
-                        ")->execute([$oldRoom, $oldRoom, $id]);
-                    }
-
+                    // Room column is NOT updated — preserved as-is
                     $pdo->prepare("
                         UPDATE students SET reg_number=?, full_name=?, email=?, phone=?, gender=?,
-                            year_of_study=?, course=?, current_room_id=?, placed=?, is_active=?
+                            year_of_study=?, course=?, is_active=?
                         WHERE id=?
                     ")->execute([
                         $form['reg_number'], $form['full_name'], $form['email'], $form['phone'] ?: null,
                         $form['gender'], $form['year_of_study'], $form['course'] ?: null,
-                        $roomId, $roomId ? 1 : 0, $form['is_active'], $id,
+                        $form['is_active'], $id,
                     ]);
-                    if ($roomId) $pdo->prepare("UPDATE rooms SET status='occupied' WHERE id=?")->execute([$roomId]);
                     audit_log($_SESSION['user_id'], $id, 'student_edit', "Edited student #$id");
                     $_SESSION['flash'] = ['type'=>'success','msg'=>'Student updated.'];
 
@@ -198,19 +188,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // ----- CHANGE ROOM (from modal) -----
-    elseif ($action === 'change_room') {
+    elseif ($action === 'change_room' && !$isEdit) {
         // just keep the posted room id — form re-renders with it
-        // (validation happens on save)
     }
 }
 
 // ------------------------------------------------------------
-// CURRENT AUTO-PICK PREVIEW (for the right card)
+// PREVIEW (create only)
 // ------------------------------------------------------------
 $bestRoom = null;
-if (in_array($form['gender'], ['Male','Female'], true)) {
+$alternatives = [];
+$currentRoomInfo = null;
+
+if ($isEdit) {
+    // Show current room info (read-only) for the panel
     if ($form['current_room_id'] > 0) {
-        // Show the currently selected room
+        $stmt = $pdo->prepare("
+            SELECT r.id, r.room_number, r.capacity, b.name AS block_name,
+                (SELECT COUNT(*) FROM students s WHERE s.current_room_id=r.id AND s.is_active=1) AS occ
+            FROM rooms r JOIN blocks b ON b.id = r.block_id
+            WHERE r.id = ?
+        ");
+        $stmt->execute([$form['current_room_id']]);
+        $currentRoomInfo = $stmt->fetch() ?: null;
+    }
+} elseif (in_array($form['gender'], ['Male','Female'], true)) {
+    if ($form['current_room_id'] > 0) {
         $stmt = $pdo->prepare("
             SELECT r.id, r.room_number, r.capacity, b.name AS block_name,
                 (SELECT COUNT(*) FROM students s WHERE s.current_room_id=r.id AND s.is_active=1) AS occ
@@ -223,11 +226,9 @@ if (in_array($form['gender'], ['Male','Female'], true)) {
         $bestRoom = pick_best_room($pdo, $form['gender']);
         if ($bestRoom) $form['current_room_id'] = (int)$bestRoom['id'];
     }
-}
-
-$alternatives = [];
-if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
-    $alternatives = list_alternative_rooms($pdo, $form['gender'], (int)$bestRoom['id']);
+    if ($bestRoom) {
+        $alternatives = list_alternative_rooms($pdo, $form['gender'], (int)$bestRoom['id']);
+    }
 }
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
@@ -238,10 +239,17 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
 
             <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
                 <div>
-                    <h4 class="mb-1"><i class="fas fa-<?= $isEdit?'edit':'user-plus' ?> text-primary me-2"></i><?= $isEdit?'Edit':'Add' ?> Student</h4>
-                    <p class="text-muted small mb-0"><?= $isEdit?'#'.$id.' · '.h($student['full_name']):'Register a new student · room auto-picked' ?></p>
+                    <h4 class="mb-1">
+                        <i class="fas fa-<?= $isEdit?'edit':'user-plus' ?> text-primary me-2"></i>
+                        <?= $isEdit?'Edit':'Add' ?> Student
+                    </h4>
+                    <p class="text-muted small mb-0">
+                        <?= $isEdit?'#'.$id.' · '.h($student['full_name']):'Register a new student · room auto-picked' ?>
+                    </p>
                 </div>
-                <a href="students.php" class="btn btn-outline-secondary btn-sm"><i class="fas fa-arrow-left me-1"></i>Back</a>
+                <a href="students.php" class="btn btn-outline-secondary btn-sm">
+                    <i class="fas fa-arrow-left me-1"></i>Back
+                </a>
             </div>
 
             <?php if ($errors): ?>
@@ -277,7 +285,9 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
                                         <option value="Male"   <?= $form['gender']==='Male'?'selected':'' ?>>Male</option>
                                         <option value="Female" <?= $form['gender']==='Female'?'selected':'' ?>>Female</option>
                                     </select>
-                                    <small class="text-muted">Picking a gender auto-assigns a room.</small>
+                                    <?php if (!$isEdit): ?>
+                                        <small class="text-muted">Picking a gender auto-assigns a room.</small>
+                                    <?php endif; ?>
                                 </div>
                                 <div class="col-md-4">
                                     <label class="form-label">Year <span class="text-danger">*</span></label>
@@ -299,8 +309,13 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
                             <input type="hidden" name="action" id="actionInput" value="save">
 
                             <hr>
-                            <button class="btn btn-primary" onclick="document.getElementById('actionInput').value='save';">
-                                <i class="fas fa-save me-1"></i><?= $isEdit?'Save Changes':'Create Student' ?>
+                            <button class="btn btn-primary" id="saveBtn" type="submit">
+                                <span class="btn-label">
+                                    <i class="fas fa-save me-1"></i><?= $isEdit?'Save Changes':'Create Student' ?>
+                                </span>
+                                <span class="btn-spin d-none">
+                                    <span class="spinner-border spinner-border-sm me-2"></span>Saving...
+                                </span>
                             </button>
                             <a href="students.php" class="btn btn-outline-secondary">Cancel</a>
                         </form>
@@ -310,8 +325,14 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
                 <div class="col-lg-4">
                     <div class="card border-0 shadow-sm sticky-top" style="top:80px;">
                         <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                            <h6 class="mb-0 fw-bold"><i class="fas fa-magic text-primary me-2"></i>Auto-Picked Room</h6>
-                            <?php if ($bestRoom && !empty($alternatives)): ?>
+                            <h6 class="mb-0 fw-bold">
+                                <?php if ($isEdit): ?>
+                                    <i class="fas fa-bed text-primary me-2"></i>Current Room
+                                <?php else: ?>
+                                    <i class="fas fa-magic text-primary me-2"></i>Auto-Picked Room
+                                <?php endif; ?>
+                            </h6>
+                            <?php if (!$isEdit && $bestRoom && !empty($alternatives)): ?>
                             <button type="button" class="btn btn-sm btn-outline-secondary"
                                     data-bs-toggle="modal" data-bs-target="#changeRoomModal">
                                 <i class="fas fa-random me-1"></i>Change
@@ -319,42 +340,83 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
                             <?php endif; ?>
                         </div>
                         <div class="card-body">
-                            <?php if (!$form['gender']): ?>
-                                <div class="text-center text-muted py-3">
-                                    <i class="fas fa-bed fa-2x mb-2 opacity-25"></i>
-                                    <p class="small mb-0">Select a gender to auto-pick a room</p>
-                                </div>
-                            <?php elseif ($bestRoom): ?>
-                                <div class="text-center">
-                                    <div class="stat-icon bg-success-subtle text-success mx-auto mb-2">
-                                        <i class="fas fa-bed"></i>
+
+                            <?php if ($isEdit): ?>
+                                <!-- EDIT MODE: room is READ-ONLY -->
+                                <?php if ($currentRoomInfo): ?>
+                                    <div class="text-center">
+                                        <div class="stat-icon bg-primary-subtle text-primary mx-auto mb-2">
+                                            <i class="fas fa-bed"></i>
+                                        </div>
+                                        <div class="fs-3 fw-bold text-primary"><?= h($currentRoomInfo['room_number']) ?></div>
+                                        <div class="small text-muted"><?= h($currentRoomInfo['block_name']) ?></div>
                                     </div>
-                                    <div class="fs-3 fw-bold text-primary"><?= h($bestRoom['room_number']) ?></div>
-                                    <div class="small text-muted"><?= h($bestRoom['block_name']) ?></div>
-                                </div>
-                                <hr>
-                                <div class="small">
-                                    <div class="d-flex justify-content-between mb-1">
-                                        <span class="text-muted">Capacity</span><strong><?= (int)$bestRoom['capacity'] ?></strong>
+                                    <hr>
+                                    <div class="small">
+                                        <div class="d-flex justify-content-between mb-1">
+                                            <span class="text-muted">Capacity</span><strong><?= (int)$currentRoomInfo['capacity'] ?></strong>
+                                        </div>
+                                        <div class="d-flex justify-content-between">
+                                            <span class="text-muted">Occupied</span><strong><?= (int)$currentRoomInfo['occ'] ?></strong>
+                                        </div>
                                     </div>
-                                    <div class="d-flex justify-content-between mb-1">
-                                        <span class="text-muted">Occupied</span><strong><?= (int)$bestRoom['occ'] ?></strong>
+                                    <div class="alert alert-warning small mt-3 mb-0">
+                                        <i class="fas fa-lock me-1"></i>
+                                        <strong>Room is locked.</strong>
+                                        Only the Dean / Secretary can move students between rooms.
                                     </div>
-                                    <div class="d-flex justify-content-between">
-                                        <span class="text-muted">Free spaces</span>
-                                        <strong class="text-success"><?= (int)$bestRoom['capacity'] - (int)$bestRoom['occ'] ?></strong>
+                                <?php else: ?>
+                                    <div class="text-center text-muted py-3">
+                                        <i class="fas fa-bed fa-2x mb-2 opacity-25"></i>
+                                        <p class="small mb-0">No room assigned yet</p>
                                     </div>
-                                </div>
-                                <div class="alert alert-info small mt-3 mb-0">
-                                    <i class="fas fa-info-circle me-1"></i>
-                                    Packed to fill rooms already in use.
-                                </div>
+                                    <div class="alert alert-warning small mt-3 mb-0">
+                                        <i class="fas fa-lock me-1"></i>
+                                        Assign a room from the
+                                        <strong>Room Assignment</strong> page (Dean / Secretary).
+                                    </div>
+                                <?php endif; ?>
+
                             <?php else: ?>
-                                <div class="alert alert-warning small mb-0">
-                                    No rooms available for <?= h($form['gender']) ?> students.
-                                    The student will be created <strong>unplaced</strong>.
-                                </div>
+                                <!-- CREATE MODE: auto-pick preview -->
+                                <?php if (!$form['gender']): ?>
+                                    <div class="text-center text-muted py-3">
+                                        <i class="fas fa-bed fa-2x mb-2 opacity-25"></i>
+                                        <p class="small mb-0">Select a gender to auto-pick a room</p>
+                                    </div>
+                                <?php elseif ($bestRoom): ?>
+                                    <div class="text-center">
+                                        <div class="stat-icon bg-success-subtle text-success mx-auto mb-2">
+                                            <i class="fas fa-bed"></i>
+                                        </div>
+                                        <div class="fs-3 fw-bold text-primary"><?= h($bestRoom['room_number']) ?></div>
+                                        <div class="small text-muted"><?= h($bestRoom['block_name']) ?></div>
+                                    </div>
+                                    <hr>
+                                    <div class="small">
+                                        <div class="d-flex justify-content-between mb-1">
+                                            <span class="text-muted">Capacity</span><strong><?= (int)$bestRoom['capacity'] ?></strong>
+                                        </div>
+                                        <div class="d-flex justify-content-between mb-1">
+                                            <span class="text-muted">Occupied</span><strong><?= (int)$bestRoom['occ'] ?></strong>
+                                        </div>
+                                        <div class="d-flex justify-content-between">
+                                            <span class="text-muted">Free spaces</span>
+                                            <strong class="text-success"><?= (int)$bestRoom['capacity'] - (int)$bestRoom['occ'] ?></strong>
+                                        </div>
+                                    </div>
+                                    <div class="alert alert-info small mt-3 mb-0">
+                                        <i class="fas fa-info-circle me-1"></i>
+                                        Packed to fill rooms already in use.
+                                    </div>
+                                <?php else: ?>
+                                    <div class="alert alert-warning small mb-0">
+                                        No rooms available for <?= h($form['gender']) ?> students.
+                                        The student will be created <strong>unplaced</strong>.
+                                    </div>
+                                <?php endif; ?>
                             <?php endif; ?>
+
                         </div>
                     </div>
                 </div>
@@ -363,8 +425,8 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
             <div class="pb-4"></div>
         </main>
 
-<!-- Change room modal -->
-<?php if ($bestRoom && !empty($alternatives)): ?>
+<!-- Change room modal — CREATE ONLY -->
+<?php if (!$isEdit && $bestRoom && !empty($alternatives)): ?>
 <div class="modal fade" id="changeRoomModal" tabindex="-1">
     <div class="modal-dialog modal-lg"><div class="modal-content">
         <form method="post">
@@ -393,7 +455,6 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
                     </table>
                 </div>
 
-                <!-- Preserve all current form fields -->
                 <input type="hidden" name="action" value="change_room">
                 <input type="hidden" name="reg_number"     value="<?= h($form['reg_number']) ?>">
                 <input type="hidden" name="full_name"      value="<?= h($form['full_name']) ?>">
@@ -416,10 +477,22 @@ if ($bestRoom && in_array($form['gender'], ['Male','Female'], true)) {
 <?php include __DIR__ . '/partial/footer.php'; ?>
 
 <script>
-// When gender changes: POST to same page with action=autopick_gender
-// so PHP re-picks a room. Preserve other form values.
+// Auto-pick on gender change — CREATE only
+<?php if (!$isEdit): ?>
 document.getElementById('genderSelect')?.addEventListener('change', function () {
     document.getElementById('actionInput').value = 'autopick_gender';
     document.getElementById('studentForm').submit();
+});
+<?php endif; ?>
+
+// Spinner on save
+document.getElementById('studentForm')?.addEventListener('submit', function (e) {
+    // Don't spin during gender autopick
+    if (document.getElementById('actionInput').value !== 'save') return;
+
+    const btn = document.getElementById('saveBtn');
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
 });
 </script>

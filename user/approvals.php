@@ -5,9 +5,9 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/mailer.php';
 require_role(['dean_men','dean_women','secretary_men','secretary_women']);
 
-$gender  = gender_filter();
-$isDean  = is_dean();
-$flash   = $_SESSION['flash'] ?? null;
+$gender = gender_filter();
+$isDean = is_dean();
+$flash  = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 
 // ---------- ACTIONS ----------
@@ -16,7 +16,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $bid    = (int)($_POST['booking_id'] ?? 0);
 
     if ($bid > 0) {
-        // Load booking (scoped to wing)
         $stmt = $pdo->prepare("
             SELECT b.*, s.full_name, s.email, s.gender, s.reg_number,
                    r.room_number, r.id AS room_id, bl.name AS block_name
@@ -34,12 +33,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect(APP_BASE . '/user/approvals.php');
         }
 
-        // ---------- APPROVE (confirm only — do NOT assign room yet) ----------
+        // ---------- APPROVE ----------
         if ($action === 'approve' && $booking['status'] === 'pending_approval') {
             try {
                 $pdo->beginTransaction();
 
-                // Target semester = booking's own semester, else next-up semester
                 $targetSem = (int)($booking['semester_id'] ?? 0);
                 if ($targetSem <= 0) {
                     $targetSem = active_semester_id() ?? 0;
@@ -59,7 +57,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 audit_log($_SESSION['user_id'], $booking['student_id'], 'booking_approve',
                     "Confirmed booking #$bid for {$booking['reg_number']} → {$booking['room_number']} (sem #$targetSem)");
 
-                // Confirmation email — NOT the "welcome to your room" one
                 @send_confirmation_email(
                     $booking['email'],
                     $booking['full_name'],
@@ -89,7 +86,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE id = ?
                 ")->execute([$reason, $bid]);
 
-                // Free the room if it was reserved
                 $pdo->prepare("
                     UPDATE rooms
                     SET status = CASE WHEN phase = 1 THEN 'occupied' ELSE 'available_p2' END,
@@ -111,7 +107,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect(APP_BASE . '/user/approvals.php');
         }
 
-        // ---------- CANCEL (Dean only, confirmed bookings) ----------
+        // ---------- CANCEL (Dean only) ----------
         if ($action === 'cancel' && $isDean && $booking['status'] === 'confirmed') {
             try {
                 $pdo->beginTransaction();
@@ -120,7 +116,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE bookings SET status='cancelled', cancelled_reason=? WHERE id=?")
                     ->execute([$reason, $bid]);
 
-                // Free the room (only if no one else occupies it in that semester)
                 $pdo->prepare("
                     UPDATE rooms SET status='available_p2', reserved_by_student_id=NULL, reserved_at=NULL
                     WHERE id=?
@@ -132,7 +127,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                       )
                 ")->execute([$booking['room_id'], $bid]);
 
-                // If the semester is already active, un-place the student
                 $activeSid = active_semester_id();
                 if ($activeSid && (int)$booking['semester_id'] === (int)$activeSid) {
                     $pdo->prepare("UPDATE students SET placed=0, current_room_id=NULL WHERE id=?")
@@ -157,18 +151,35 @@ if (!in_array($status, ['pending_approval','confirmed','cancelled','all'], true)
     $status = 'pending_approval';
 }
 
+$search = trim($_GET['q'] ?? '');
+
 $where  = ' WHERE s.gender = ?';
 $params = [$gender];
 if ($status !== 'all') {
     $where .= ' AND b.status = ?';
     $params[] = $status;
 }
-
-$search = trim($_GET['q'] ?? '');
 if ($search !== '') {
     $where .= ' AND (s.full_name LIKE ? OR s.reg_number LIKE ? OR r.room_number LIKE ?)';
     $params[] = "%$search%"; $params[] = "%$search%"; $params[] = "%$search%";
 }
+
+// Pagination
+$perPage = 25;
+$page    = max(1, (int)($_GET['page'] ?? 1));
+
+$stmt = $pdo->prepare("
+    SELECT COUNT(*) FROM bookings b
+    JOIN students s ON s.id = b.student_id
+    JOIN rooms r    ON r.id = b.room_id
+    $where
+");
+$stmt->execute($params);
+$totalRows = (int)$stmt->fetchColumn();
+
+$totalPages = max(1, (int)ceil($totalRows / $perPage));
+if ($page > $totalPages) $page = $totalPages;
+$offset = ($page - 1) * $perPage;
 
 $stmt = $pdo->prepare("
     SELECT b.*, s.full_name, s.email, s.reg_number, s.gender,
@@ -179,11 +190,18 @@ $stmt = $pdo->prepare("
     JOIN students s  ON s.id = b.student_id
     JOIN rooms r     ON r.id = b.room_id
     JOIN blocks bl   ON bl.id = r.block_id
-    LEFT JOIN users u   ON u.id = b.approved_by
+    LEFT JOIN users u ON u.id = b.approved_by
     LEFT JOIN semesters sem ON sem.id = b.semester_id
     $where
-    ORDER BY b.created_at DESC
-    LIMIT 500
+    ORDER BY
+        CASE b.status
+            WHEN 'pending_approval' THEN 1
+            WHEN 'confirmed'        THEN 2
+            WHEN 'cancelled'        THEN 3
+            ELSE 4
+        END,
+        b.created_at DESC
+    LIMIT $perPage OFFSET $offset
 ");
 $stmt->execute($params);
 $bookings = $stmt->fetchAll();
@@ -198,6 +216,8 @@ $stmt->execute([$gender]);
 $counts = ['pending_approval'=>0,'confirmed'=>0,'cancelled'=>0];
 foreach ($stmt as $row) $counts[$row['status']] = (int)$row['c'];
 
+$totalAll = array_sum($counts);
+
 $activeSem = active_semester();
 
 function status_badge(string $s): string {
@@ -210,6 +230,17 @@ function status_badge(string $s): string {
         default            => '<span class="badge bg-light text-dark">' . h($s) . '</span>',
     };
 }
+
+// URL helper
+function app_url(array $overrides = []): string {
+    $q = array_merge([
+        'q'      => $_GET['q']      ?? '',
+        'status' => $_GET['status'] ?? 'pending_approval',
+        'page'   => $_GET['page']   ?? 1,
+    ], $overrides);
+    $q = array_filter($q, fn($v) => $v !== '' && $v !== null);
+    return 'approvals.php' . ($q ? '?' . http_build_query($q) : '');
+}
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
 <div id="layoutSidenav">
@@ -221,21 +252,27 @@ function status_badge(string $s): string {
                 <div>
                     <h4 class="mb-1"><i class="fas fa-check-circle text-primary me-2"></i>Approvals</h4>
                     <p class="text-muted small mb-0">
-                        <?= h($gender) ?> wing · <?= $counts['pending_approval'] ?> awaiting
+                        <?= h($gender) ?> wing · <?= number_format($counts['pending_approval']) ?> awaiting
                         <?php if ($activeSem): ?>
                             · active: <strong><?= h($activeSem['name']) ?></strong>
                         <?php endif; ?>
                     </p>
                 </div>
+                <span class="badge bg-info fs-6">
+                    <i class="fas fa-clipboard-list me-1"></i>
+                    <?= number_format($totalAll) ?> total booking<?= $totalAll===1?'':'s' ?>
+                </span>
             </div>
 
             <?php if ($flash): ?>
-                <div class="alert alert-<?= h($flash['type']) ?> alert-dismissible fade show">
-                    <?= h($flash['msg']) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
+            <div class="alert alert-<?= h($flash['type']) ?> alert-dismissible fade show d-flex align-items-center auto-dismiss">
+                <i class="fas fa-<?= $flash['type']==='success' ? 'check-circle' : 'exclamation-circle' ?> me-2"></i>
+                <div class="flex-grow-1"><?= h($flash['msg']) ?></div>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
             <?php endif; ?>
 
-            <!-- Info about the new flow -->
+            <!-- Info banner -->
             <div class="alert alert-info d-flex align-items-start">
                 <i class="fas fa-info-circle me-2 mt-1"></i>
                 <div class="small">
@@ -248,29 +285,48 @@ function status_badge(string $s): string {
 
             <!-- Status chips -->
             <div class="d-flex flex-wrap gap-2 mb-3">
-                <a href="approvals.php?status=pending_approval" class="btn btn-sm <?= $status==='pending_approval'?'btn-info':'btn-outline-info' ?>">
-                    Awaiting <span class="badge bg-light text-dark ms-1"><?= $counts['pending_approval'] ?></span>
+                <a href="<?= h(app_url(['status'=>'pending_approval','page'=>1])) ?>"
+                   class="btn btn-sm <?= $status==='pending_approval'?'btn-info':'btn-outline-info' ?>">
+                    Awaiting <span class="badge bg-light text-dark ms-1"><?= number_format($counts['pending_approval']) ?></span>
                 </a>
-                <a href="approvals.php?status=confirmed" class="btn btn-sm <?= $status==='confirmed'?'btn-success':'btn-outline-success' ?>">
-                    Confirmed <span class="badge bg-light text-dark ms-1"><?= $counts['confirmed'] ?></span>
+                <a href="<?= h(app_url(['status'=>'confirmed','page'=>1])) ?>"
+                   class="btn btn-sm <?= $status==='confirmed'?'btn-success':'btn-outline-success' ?>">
+                    Confirmed <span class="badge bg-light text-dark ms-1"><?= number_format($counts['confirmed']) ?></span>
                 </a>
-                <a href="approvals.php?status=cancelled" class="btn btn-sm <?= $status==='cancelled'?'btn-danger':'btn-outline-danger' ?>">
-                    Cancelled <span class="badge bg-light text-dark ms-1"><?= $counts['cancelled'] ?></span>
+                <a href="<?= h(app_url(['status'=>'cancelled','page'=>1])) ?>"
+                   class="btn btn-sm <?= $status==='cancelled'?'btn-danger':'btn-outline-danger' ?>">
+                    Cancelled <span class="badge bg-light text-dark ms-1"><?= number_format($counts['cancelled']) ?></span>
                 </a>
-                <a href="approvals.php?status=all" class="btn btn-sm <?= $status==='all'?'btn-primary':'btn-outline-primary' ?>">
-                    All
+                <a href="<?= h(app_url(['status'=>'all','page'=>1])) ?>"
+                   class="btn btn-sm <?= $status==='all'?'btn-primary':'btn-outline-primary' ?>">
+                    All <span class="badge bg-light text-dark ms-1"><?= number_format($totalAll) ?></span>
                 </a>
             </div>
 
             <!-- Search -->
             <div class="card border-0 shadow-sm mb-3"><div class="card-body">
-                <form method="get" class="row g-2 align-items-end">
+                <form method="get" class="row g-2 align-items-end" id="filterForm">
                     <input type="hidden" name="status" value="<?= h($status) ?>">
-                    <div class="col-md-8"><label class="form-label small mb-1">Search</label>
-                        <input type="text" name="q" class="form-control form-control-sm" value="<?= h($search) ?>" placeholder="Name, reg #, room"></div>
+                    <div class="col-md-8">
+                        <label class="form-label small mb-1">Search</label>
+                        <div class="position-relative">
+                            <input type="text" name="q" id="searchInput"
+                                   class="form-control form-control-sm"
+                                   value="<?= h($search) ?>" placeholder="Name, reg #, room"
+                                   autocomplete="off">
+                            <span id="searchSpinner" class="position-absolute top-50 end-0 translate-middle-y me-2 d-none">
+                                <span class="spinner-border spinner-border-sm text-primary"></span>
+                            </span>
+                        </div>
+                    </div>
                     <div class="col-md-4 d-flex gap-2">
-                        <button class="btn btn-primary btn-sm flex-fill"><i class="fas fa-search me-1"></i>Search</button>
-                        <a href="approvals.php?status=<?= h($status) ?>" class="btn btn-outline-secondary btn-sm"><i class="fas fa-times"></i></a>
+                        <button class="btn btn-primary btn-sm flex-fill" id="filterBtn">
+                            <span class="btn-label"><i class="fas fa-search me-1"></i>Search</span>
+                            <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm"></span></span>
+                        </button>
+                        <a href="approvals.php?status=<?= h($status) ?>" class="btn btn-outline-secondary btn-sm">
+                            <i class="fas fa-times"></i>
+                        </a>
                     </div>
                 </form>
             </div></div>
@@ -281,6 +337,7 @@ function status_badge(string $s): string {
                     <div class="text-center py-5 text-muted">
                         <i class="fas fa-inbox fa-3x mb-3 opacity-25"></i>
                         <h6>No bookings in this view</h6>
+                        <p class="small mb-0">Adjust filters or switch tabs.</p>
                     </div>
                 <?php else: ?>
                     <div class="table-responsive">
@@ -290,10 +347,11 @@ function status_badge(string $s): string {
                                     <th>Student</th>
                                     <th>Room</th>
                                     <th>Semester</th>
-                                    <th>Phase</th>
-                                    <th>OTP</th>
+                                    <th class="text-center">Phase</th>
+                                    <th class="text-center">OTP</th>
                                     <th>M-Pesa</th>
                                     <th>Status</th>
+                                    <th>Approved</th>
                                     <th class="text-end">Actions</th>
                                 </tr>
                             </thead>
@@ -301,7 +359,7 @@ function status_badge(string $s): string {
                             <?php foreach ($bookings as $b): ?>
                                 <tr>
                                     <td>
-                                        <div class="fw-semibold"><?= h($b['full_name']) ?></div>
+                                        <div class="fw-semibold small"><?= h($b['full_name']) ?></div>
                                         <div class="text-muted" style="font-size:.72rem;"><?= h($b['reg_number']) ?></div>
                                     </td>
                                     <td>
@@ -311,8 +369,8 @@ function status_badge(string $s): string {
                                     <td class="small">
                                         <?= $b['semester_name'] ? h($b['semester_name']) : '<span class="text-muted">—</span>' ?>
                                     </td>
-                                    <td><span class="badge bg-light text-dark">P<?= (int)$b['phase'] ?></span></td>
-                                    <td>
+                                    <td class="text-center"><span class="badge bg-light text-dark">P<?= (int)$b['phase'] ?></span></td>
+                                    <td class="text-center">
                                         <?php if ($b['otp_verified_at']): ?>
                                             <span class="badge bg-success" title="<?= h($b['otp_verified_at']) ?>"><i class="fas fa-check"></i></span>
                                         <?php else: ?>
@@ -327,16 +385,24 @@ function status_badge(string $s): string {
                                         <?php endif; ?>
                                     </td>
                                     <td><?= status_badge($b['status']) ?></td>
+                                    <td class="small text-muted">
+                                        <?php if ($b['approved_at']): ?>
+                                            <div><?= date('M j, H:i', strtotime($b['approved_at'])) ?></div>
+                                            <div style="font-size:.7rem;">by <?= h($b['approver'] ?? '—') ?></div>
+                                        <?php else: ?>
+                                            —
+                                        <?php endif; ?>
+                                    </td>
                                     <td class="text-end">
                                         <?php if ($b['status'] === 'pending_approval'): ?>
-                                            <form method="post" class="d-inline"
-                                                  onsubmit="return confirm('Confirm booking for <?= h(addslashes($b['full_name'])) ?> into <?= h($b['room_number']) ?>? The student will be placed in the room when the semester is activated.');">
-                                                <input type="hidden" name="action" value="approve">
-                                                <input type="hidden" name="booking_id" value="<?= (int)$b['id'] ?>">
-                                                <button class="btn btn-sm btn-success">
-                                                    <i class="fas fa-check me-1"></i>Approve
-                                                </button>
-                                            </form>
+                                            <button class="btn btn-sm btn-success approve-btn"
+                                                    data-bid="<?= (int)$b['id'] ?>"
+                                                    data-name="<?= h($b['full_name']) ?>"
+                                                    data-room="<?= h($b['room_number']) ?>"
+                                                    data-block="<?= h($b['block_name']) ?>">
+                                                <span class="btn-label"><i class="fas fa-check me-1"></i>Approve</span>
+                                                <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm"></span></span>
+                                            </button>
                                             <button class="btn btn-sm btn-outline-danger"
                                                     data-bs-toggle="modal"
                                                     data-bs-target="#rejectModal"
@@ -355,9 +421,8 @@ function status_badge(string $s): string {
                                                 <i class="fas fa-ban"></i> Cancel
                                             </button>
                                         <?php elseif ($b['status'] === 'confirmed'): ?>
-                                            <span class="badge bg-light text-dark small"
-                                                  title="Placed when semester is activated">
-                                                <i class="fas fa-hourglass-half me-1"></i>Awaiting semester start
+                                            <span class="badge bg-light text-dark small" title="Placed when semester is activated">
+                                                <i class="fas fa-hourglass-half me-1"></i>Awaiting start
                                             </span>
                                         <?php else: ?>
                                             <span class="text-muted small">—</span>
@@ -368,30 +433,112 @@ function status_badge(string $s): string {
                             </tbody>
                         </table>
                     </div>
+
+                    <!-- Pagination -->
+                    <?php if ($totalPages > 1): ?>
+                    <div class="card-footer bg-white d-flex flex-wrap justify-content-between align-items-center">
+                        <div class="small text-muted mb-2 mb-md-0">
+                            Showing <strong><?= number_format($offset + 1) ?></strong>–<strong><?= number_format(min($offset + $perPage, $totalRows)) ?></strong>
+                            of <strong><?= number_format($totalRows) ?></strong>
+                        </div>
+                        <nav>
+                            <ul class="pagination pagination-sm mb-0">
+                                <li class="page-item <?= $page <= 1 ? 'disabled' : '' ?>">
+                                    <a class="page-link" href="<?= $page <= 1 ? '#' : h(app_url(['page' => $page - 1])) ?>">
+                                        <i class="fas fa-angle-left"></i>
+                                    </a>
+                                </li>
+                                <?php
+                                $start = max(1, $page - 2);
+                                $end   = min($totalPages, $page + 2);
+                                if ($start > 1): ?>
+                                    <li class="page-item"><a class="page-link" href="<?= h(app_url(['page' => 1])) ?>">1</a></li>
+                                    <?php if ($start > 2): ?>
+                                        <li class="page-item disabled"><span class="page-link">…</span></li>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                                <?php for ($i = $start; $i <= $end; $i++): ?>
+                                    <li class="page-item <?= $i === $page ? 'active' : '' ?>">
+                                        <a class="page-link" href="<?= h(app_url(['page' => $i])) ?>"><?= $i ?></a>
+                                    </li>
+                                <?php endfor; ?>
+                                <?php if ($end < $totalPages): ?>
+                                    <?php if ($end < $totalPages - 1): ?>
+                                        <li class="page-item disabled"><span class="page-link">…</span></li>
+                                    <?php endif; ?>
+                                    <li class="page-item"><a class="page-link" href="<?= h(app_url(['page' => $totalPages])) ?>"><?= $totalPages ?></a></li>
+                                <?php endif; ?>
+                                <li class="page-item <?= $page >= $totalPages ? 'disabled' : '' ?>">
+                                    <a class="page-link" href="<?= $page >= $totalPages ? '#' : h(app_url(['page' => $page + 1])) ?>">
+                                        <i class="fas fa-angle-right"></i>
+                                    </a>
+                                </li>
+                            </ul>
+                        </nav>
+                    </div>
+                    <?php endif; ?>
                 <?php endif; ?>
             </div></div>
 
             <div class="pb-4"></div>
         </main>
 
-<!-- Reject modal -->
-<div class="modal fade" id="rejectModal" tabindex="-1">
+<!-- Approve modal -->
+<div class="modal fade" id="approveModal" tabindex="-1">
     <div class="modal-dialog"><div class="modal-content">
-        <form method="post">
+        <form method="post" id="approveForm">
             <div class="modal-header">
-                <h5 class="modal-title">Reject Booking</h5>
+                <h5 class="modal-title">
+                    <i class="fas fa-check-circle text-success me-2"></i>Approve Booking
+                </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <p>Reject booking for <strong id="rejectName"></strong> (Room <strong id="rejectRoom"></strong>)?</p>
-                <label class="form-label">Reason (optional)</label>
-                <input type="text" name="reason" class="form-control" placeholder="e.g., OTP not verified / Invalid M-Pesa ref">
+                <p class="mb-3">
+                    Confirm booking for <strong id="approveName"></strong> into
+                    <strong id="approveRoom"></strong> (<span id="approveBlock"></span>)?
+                </p>
+                <div class="alert alert-info small mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    A confirmation email will be sent. The student will be placed in the room when the semester starts.
+                </div>
+                <input type="hidden" name="action" value="approve">
+                <input type="hidden" name="booking_id" id="approveBid">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-success" id="approveSubmit">
+                    <span class="btn-label"><i class="fas fa-check me-1"></i>Approve & Email</span>
+                    <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm me-1"></span>Approving...</span>
+                </button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<!-- Reject modal -->
+<div class="modal fade" id="rejectModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <form method="post" id="rejectForm">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-times-circle text-danger me-2"></i>Reject Booking
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-3">Reject booking for <strong id="rejectName"></strong> (Room <strong id="rejectRoom"></strong>)?</p>
+                <label class="form-label small fw-bold">Reason <span class="text-muted">(optional)</span></label>
+                <textarea name="reason" class="form-control" rows="2" placeholder="e.g. OTP not verified / Invalid M-Pesa ref / Room no longer available"></textarea>
                 <input type="hidden" name="action" value="reject">
                 <input type="hidden" name="booking_id" id="rejectBid">
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button class="btn btn-danger">Reject &amp; Free Room</button>
+                <button type="submit" class="btn btn-danger" id="rejectSubmit">
+                    <span class="btn-label"><i class="fas fa-times me-1"></i>Reject & Free Room</span>
+                    <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm me-1"></span>Rejecting...</span>
+                </button>
             </div>
         </form>
     </div></div>
@@ -400,39 +547,114 @@ function status_badge(string $s): string {
 <!-- Cancel modal -->
 <div class="modal fade" id="cancelModal" tabindex="-1">
     <div class="modal-dialog"><div class="modal-content">
-        <form method="post">
+        <form method="post" id="cancelForm">
             <div class="modal-header">
-                <h5 class="modal-title">Cancel Confirmed Booking</h5>
+                <h5 class="modal-title">
+                    <i class="fas fa-ban text-danger me-2"></i>Cancel Confirmed Booking
+                </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <p>Cancel confirmed booking for <strong id="cancelName"></strong> (Room <strong id="cancelRoom"></strong>)?</p>
-                <p class="small text-muted">The room is freed and the student is unplaced.</p>
-                <label class="form-label">Reason</label>
-                <input type="text" name="reason" class="form-control" required placeholder="Reason for cancel">
+                <p class="mb-2">Cancel confirmed booking for <strong id="cancelName"></strong> (Room <strong id="cancelRoom"></strong>)?</p>
+                <div class="alert alert-warning small">
+                    <i class="fas fa-exclamation-triangle me-1"></i>
+                    The room is freed and the student is unplaced. This cannot be undone.
+                </div>
+                <label class="form-label small fw-bold">Reason <span class="text-danger">*</span></label>
+                <textarea name="reason" class="form-control" rows="2" required placeholder="Reason for cancellation"></textarea>
                 <input type="hidden" name="action" value="cancel">
                 <input type="hidden" name="booking_id" id="cancelBid">
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Keep</button>
-                <button class="btn btn-danger">Cancel Booking</button>
+                <button type="submit" class="btn btn-danger" id="cancelSubmit">
+                    <span class="btn-label"><i class="fas fa-ban me-1"></i>Cancel Booking</span>
+                    <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm me-1"></span>Cancelling...</span>
+                </button>
             </div>
         </form>
     </div></div>
 </div>
 
 <?php include __DIR__ . '/partial/footer.php'; ?>
+
 <script>
-document.getElementById('rejectModal')?.addEventListener('show.bs.modal', function (e) {
+// ---------- Auto-dismiss flash ----------
+document.querySelectorAll('.auto-dismiss').forEach(el => {
+    setTimeout(() => bootstrap.Alert.getOrCreateInstance(el).close(), 4000);
+});
+
+// ---------- Debounced search ----------
+let searchTimer = null;
+const searchInput   = document.getElementById('searchInput');
+const searchSpinner = document.getElementById('searchSpinner');
+
+searchInput?.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchSpinner.classList.remove('d-none');
+    searchTimer = setTimeout(() => document.getElementById('filterForm').submit(), 500);
+});
+
+// ---------- Filter spinner ----------
+document.getElementById('filterForm')?.addEventListener('submit', () => {
+    const btn = document.getElementById('filterBtn');
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
+});
+
+// ---------- Approve ----------
+document.querySelectorAll('.approve-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('approveBid').value         = btn.dataset.bid;
+        document.getElementById('approveName').textContent  = btn.dataset.name;
+        document.getElementById('approveRoom').textContent  = btn.dataset.room;
+        document.getElementById('approveBlock').textContent = btn.dataset.block;
+        new bootstrap.Modal(document.getElementById('approveModal')).show();
+    });
+});
+
+document.getElementById('approveForm')?.addEventListener('submit', () => {
+    const btn = document.getElementById('approveSubmit');
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
+});
+
+// ---------- Reject ----------
+document.getElementById('rejectModal')?.addEventListener('show.bs.modal', e => {
     const b = e.relatedTarget;
     document.getElementById('rejectBid').value = b.dataset.bid;
     document.getElementById('rejectName').textContent = b.dataset.name;
     document.getElementById('rejectRoom').textContent = b.dataset.room;
 });
-document.getElementById('cancelModal')?.addEventListener('show.bs.modal', function (e) {
+
+document.getElementById('rejectForm')?.addEventListener('submit', () => {
+    const btn = document.getElementById('rejectSubmit');
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
+});
+
+// ---------- Cancel ----------
+document.getElementById('cancelModal')?.addEventListener('show.bs.modal', e => {
     const b = e.relatedTarget;
     document.getElementById('cancelBid').value = b.dataset.bid;
     document.getElementById('cancelName').textContent = b.dataset.name;
     document.getElementById('cancelRoom').textContent = b.dataset.room;
+});
+
+document.getElementById('cancelForm')?.addEventListener('submit', () => {
+    const btn = document.getElementById('cancelSubmit');
+    btn.querySelector('.btn-label').classList.add('d-none');
+    btn.querySelector('.btn-spin').classList.remove('d-none');
+    btn.disabled = true;
+});
+
+// ---------- Reset spinners on bfcache restore ----------
+window.addEventListener('pageshow', () => {
+    document.querySelectorAll('.btn-label').forEach(el => el.classList.remove('d-none'));
+    document.querySelectorAll('.btn-spin').forEach(el => el.classList.add('d-none'));
+    document.querySelectorAll('button[type="submit"]').forEach(btn => btn.disabled = false);
 });
 </script>

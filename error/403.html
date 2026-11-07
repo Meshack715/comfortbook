@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>403 — Access Denied · ComfortBook</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #eef4fb 0%, #f4f6f9 100%);
+            font-family: 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .error-card {
+            max-width: 560px;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 16px 48px rgba(0,51,102,.15);
+            border: 0;
+        }
+        .error-strip {
+            height: 6px;
+            background: linear-gradient(90deg, #003366, #002244);
+        }
+        .error-icon {
+            width: 110px;
+            height: 110px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #003366, #002244);
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.6rem;
+            box-shadow: 0 8px 24px rgba(0,51,102,.3);
+        }
+        .error-code {
+            font-size: 4rem;
+            font-weight: 800;
+            color: #003366;
+            line-height: 1;
+            letter-spacing: -.05em;
+        }
+        .btn-primary {
+            background: #003366 !important;
+            border-color: #003366 !important;
+        }
+        .btn-primary:hover {
+            background: #002244 !important;
+            border-color: #002244 !important;
+        }
+        .brand-line {
+            font-size: .72rem;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="card error-card">
+        <div class="error-strip"></div>
+        <div class="card-body text-center p-5">
+            <div class="mb-4">
+                <div class="error-icon">
+                    <i class="fas fa-lock"></i>
+                </div>
+            </div>
+
+            <div class="error-code">403</div>
+            <h4 class="fw-bold mt-2 mb-2">Access Denied</h4>
+            <p class="text-muted small mb-4">
+                You don't have permission to view this page.<br>
+                If you believe this is a mistake, contact your administrator.
+            </p>
+
+            <div class="d-flex justify-content-center gap-2 flex-wrap">
+                <a href="javascript:history.back()" class="btn btn-outline-secondary">
+                    <i class="fas fa-arrow-left me-1"></i>Go Back
+                </a>
+                <a href="../index.php" class="btn btn-primary">
+                    <i class="fas fa-home me-1"></i>Go to Login
+                </a>
+            </div>
+        </div>
+        <div class="card-footer bg-white border-0 pb-4 text-center">
+            <div class="brand-line">
+                <i class="fas fa-shield-alt me-1"></i>
+                University of Eastern Africa, Baraton · ComfortBook
+            </div>
+        </div>
+    </div>
+</body>
+</html>

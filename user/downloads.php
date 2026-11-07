@@ -5,12 +5,12 @@ require_once __DIR__ . '/../includes/auth.php';
 require_login();
 
 $isAdmin = is_admin();
-$gender  = gender_filter();     // null for admin
+$gender  = gender_filter();
 
-// ---------- counts for badges (semester-aware) ----------
 $activeSid = active_semester_id();
 $activeSem = active_semester();
 
+// ---------- counts ----------
 function safe_count(PDO $pdo, string $sql, array $p = []): int {
     try { $s = $pdo->prepare($sql); $s->execute($p); return (int)$s->fetchColumn(); }
     catch (Throwable $e) { return 0; }
@@ -23,7 +23,6 @@ $countStudents = safe_count($pdo, "SELECT COUNT(*) FROM students WHERE is_active
 $countRooms    = safe_count($pdo, "SELECT COUNT(*) FROM rooms WHERE 1=1" . ($gender ? " AND gender=?" : ""), $gP);
 $countBlocks   = safe_count($pdo, "SELECT COUNT(*) FROM blocks WHERE is_active=1" . ($gender ? " AND gender=?" : ""), $gP);
 
-// Placed = confirmed in active semester
 $placedExpr = $activeSid
     ? "EXISTS (SELECT 1 FROM bookings b WHERE b.student_id = s.id AND b.status='confirmed' AND b.semester_id = " . (int)$activeSid . ")"
     : "s.placed = 1";
@@ -37,7 +36,6 @@ $countUnplaced  = safe_count($pdo,
 
 $countStaff = $isAdmin ? safe_count($pdo, "SELECT COUNT(*) FROM users") : 0;
 
-// Occupancy %
 $rq = $pdo->prepare("SELECT COUNT(*) total,
     SUM(CASE WHEN status='occupied' THEN 1 ELSE 0 END) occupied
     FROM rooms WHERE 1=1" . ($gender ? " AND gender=?" : ""));
@@ -46,9 +44,13 @@ $rs = $rq->fetch() ?: ['total'=>0,'occupied'=>0];
 $occupancy_rate = (int)$rs['total'] > 0 ? round(($rs['occupied'] / $rs['total']) * 100, 1) : 0;
 
 // ---------- card renderer ----------
-function download_card(string $title, string $subtitle, string $icon, string $iconClass,
-                       string $type, string $badge, bool $csv = true, bool $pdf = true): void {
-    $base = APP_BASE;
+function download_card(
+    string $title, string $subtitle, string $icon, string $iconClass,
+    string $type, string $badge, int $count = 0,
+    bool $csv = true, bool $pdf = true
+): void {
+    $base   = APP_BASE;
+    $empty  = $count <= 0;
 ?>
     <div class="col-md-6 col-lg-4">
         <div class="card border-0 shadow-sm h-100">
@@ -63,15 +65,22 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                 <p class="text-muted small flex-grow-1 mb-3"><?= h($subtitle) ?></p>
                 <div class="d-flex gap-2">
                     <?php if ($csv): ?>
-                        <a href="<?= $base ?>/api/generate_report.php?type=<?= h($type) ?>&format=csv"
-                           class="btn btn-outline-primary btn-sm flex-fill">
-                            <i class="fas fa-file-csv me-1"></i>CSV
+                        <a href="<?= $empty ? 'javascript:void(0)' : h($base . '/api/generate_report.php?type=' . $type . '&format=csv') ?>"
+                           class="btn btn-outline-primary btn-sm flex-fill download-btn <?= $empty ? 'disabled' : '' ?>"
+                           data-fmt="csv"
+                           <?= $empty ? 'title="No data to export" aria-disabled="true"' : '' ?>>
+                            <span class="btn-label"><i class="fas fa-file-csv me-1"></i>CSV</span>
+                            <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm"></span></span>
                         </a>
                     <?php endif; ?>
                     <?php if ($pdf): ?>
-                        <a href="<?= $base ?>/api/generate_report.php?type=<?= h($type) ?>&format=pdf"
-                           target="_blank" class="btn btn-outline-danger btn-sm flex-fill">
-                            <i class="fas fa-file-pdf me-1"></i>PDF
+                        <a href="<?= $empty ? 'javascript:void(0)' : h($base . '/api/generate_report.php?type=' . $type . '&format=pdf') ?>"
+                           target="<?= $empty ? '' : '_blank' ?>"
+                           class="btn btn-outline-danger btn-sm flex-fill download-btn <?= $empty ? 'disabled' : '' ?>"
+                           data-fmt="pdf"
+                           <?= $empty ? 'title="No data to export" aria-disabled="true"' : '' ?>>
+                            <span class="btn-label"><i class="fas fa-file-pdf me-1"></i>PDF</span>
+                            <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm"></span></span>
                         </a>
                     <?php endif; ?>
                 </div>
@@ -103,6 +112,7 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                 </span>
             </div>
 
+            <!-- Info banner -->
             <div class="alert alert-info d-flex align-items-start mb-3">
                 <i class="fas fa-info-circle me-2 mt-1"></i>
                 <div class="small">
@@ -117,6 +127,40 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                 </div>
             </div>
 
+            <!-- Stats strip -->
+            <div class="row g-2 mb-3">
+                <div class="col-6 col-md-2" style="flex:0 0 20%;max-width:20%;">
+                    <div class="card border-0 shadow-sm h-100"><div class="card-body text-center py-2">
+                        <div class="fs-4 fw-bold text-primary"><?= number_format($countStudents) ?></div>
+                        <div class="small text-muted text-uppercase" style="font-size:.7rem;">Students</div>
+                    </div></div>
+                </div>
+                <div class="col-6 col-md-2" style="flex:0 0 20%;max-width:20%;">
+                    <div class="card border-0 shadow-sm h-100"><div class="card-body text-center py-2">
+                        <div class="fs-4 fw-bold text-success"><?= number_format($countRooms) ?></div>
+                        <div class="small text-muted text-uppercase" style="font-size:.7rem;">Rooms</div>
+                    </div></div>
+                </div>
+                <div class="col-6 col-md-2" style="flex:0 0 20%;max-width:20%;">
+                    <div class="card border-0 shadow-sm h-100"><div class="card-body text-center py-2">
+                        <div class="fs-4 fw-bold text-info"><?= number_format($countBlocks) ?></div>
+                        <div class="small text-muted text-uppercase" style="font-size:.7rem;">Buildings</div>
+                    </div></div>
+                </div>
+                <div class="col-6 col-md-2" style="flex:0 0 20%;max-width:20%;">
+                    <div class="card border-0 shadow-sm h-100"><div class="card-body text-center py-2">
+                        <div class="fs-4 fw-bold text-warning"><?= number_format($countConfirmed) ?></div>
+                        <div class="small text-muted text-uppercase" style="font-size:.7rem;">Placed</div>
+                    </div></div>
+                </div>
+                <div class="col-6 col-md-2" style="flex:0 0 20%;max-width:20%;">
+                    <div class="card border-0 shadow-sm h-100"><div class="card-body text-center py-2">
+                        <div class="fs-4 fw-bold text-danger"><?= number_format($countUnplaced) ?></div>
+                        <div class="small text-muted text-uppercase" style="font-size:.7rem;">Unplaced</div>
+                    </div></div>
+                </div>
+            </div>
+
             <!-- ============ STUDENTS & PLACEMENT ============ -->
             <h6 class="fw-bold text-uppercase text-muted small mb-2 mt-3">
                 <i class="fas fa-user-graduate me-1"></i>Students &amp; Placement
@@ -126,21 +170,21 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                     'Students Roster',
                     'All students with reg #, email, gender, year, current room, and placement status.',
                     'fa-users', 'bg-primary-subtle text-primary',
-                    'students', number_format($countStudents).' records'
+                    'students', number_format($countStudents).' records', $countStudents
                 ); ?>
 
                 <?php download_card(
                     'Unplaced Students',
                     'Students with no confirmed placement this semester — for follow-up.',
                     'fa-user-slash', 'bg-danger-subtle text-danger',
-                    'unplaced', number_format($countUnplaced).' unplaced'
+                    'unplaced', number_format($countUnplaced).' unplaced', $countUnplaced
                 ); ?>
 
                 <?php download_card(
                     'Confirmed Bookings',
                     'Every confirmed booking for the semester — student, room, approver, penalty.',
                     'fa-check-circle', 'bg-warning-subtle text-warning',
-                    'bookings', number_format($countConfirmed).' confirmed'
+                    'bookings', number_format($countConfirmed).' confirmed', $countConfirmed
                 ); ?>
             </div>
 
@@ -153,21 +197,21 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                     'Rooms Inventory',
                     'All rooms with building, gender, capacity, and current status.',
                     'fa-bed', 'bg-success-subtle text-success',
-                    'rooms', number_format($countRooms).' rooms'
+                    'rooms', number_format($countRooms).' rooms', $countRooms
                 ); ?>
 
                 <?php download_card(
                     'Buildings',
                     'All hostel blocks with gender, room counts, and occupancy breakdown.',
                     'fa-building', 'bg-info-subtle text-info',
-                    'blocks', number_format($countBlocks).' blocks'
+                    'blocks', number_format($countBlocks).' blocks', $countBlocks
                 ); ?>
 
                 <?php download_card(
                     'Occupancy Report',
                     'Per-building room counts, occupied/vacant/released, and occupancy percentages.',
                     'fa-chart-pie', 'bg-success-subtle text-success',
-                    'occupancy', $occupancy_rate.'% occupied'
+                    'occupancy', $occupancy_rate.'% occupied', $countRooms
                 ); ?>
             </div>
 
@@ -181,11 +225,12 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
                     'Staff Directory',
                     'All staff accounts with role, email, wing scope, and account status.',
                     'fa-users-cog', 'bg-dark text-white',
-                    'staff', number_format($countStaff).' staff'
+                    'staff', number_format($countStaff).' staff', $countStaff
                 ); ?>
             </div>
             <?php endif; ?>
 
+            <!-- Footer strip -->
             <div class="card border-0 shadow-sm mt-4">
                 <div class="card-body d-flex flex-wrap align-items-center gap-3 small text-muted">
                     <div><i class="fas fa-file-csv text-primary me-1"></i><strong>CSV</strong> — raw data, Excel-ready</div>
@@ -197,3 +242,48 @@ function download_card(string $title, string $subtitle, string $icon, string $ic
             <div class="pb-4"></div>
         </main>
 <?php include __DIR__ . '/partial/footer.php'; ?>
+
+<script>
+// ============================================================
+// Download button spinner
+//   CSV → server sends Content-Disposition: attachment
+//   PDF → opens in new tab
+//   Both: spin for 1.2s then reset (JS can't detect real completion)
+// ============================================================
+document.querySelectorAll('.download-btn').forEach(btn => {
+    if (btn.classList.contains('disabled')) return;
+
+    btn.addEventListener('click', function (e) {
+        if (this.classList.contains('disabled')) { e.preventDefault(); return; }
+
+        const label = this.querySelector('.btn-label');
+        const spin  = this.querySelector('.btn-spin');
+        const fmt   = this.dataset.fmt;
+
+        if (label) label.classList.add('d-none');
+        if (spin)  spin.classList.remove('d-none');
+        this.style.pointerEvents = 'none';
+
+        // Reset after a short delay — download triggers asynchronously
+        const reset = () => {
+            if (label) label.classList.remove('d-none');
+            if (spin)  spin.classList.add('d-none');
+            this.style.pointerEvents = '';
+        };
+        setTimeout(reset, fmt === 'pdf' ? 1800 : 1200);
+    });
+});
+
+// ============================================================
+// Reset spinners on bfcache restore (back button)
+// ============================================================
+window.addEventListener('pageshow', () => {
+    document.querySelectorAll('.download-btn').forEach(btn => {
+        const label = btn.querySelector('.btn-label');
+        const spin  = btn.querySelector('.btn-spin');
+        if (label) label.classList.remove('d-none');
+        if (spin)  spin.classList.add('d-none');
+        btn.style.pointerEvents = '';
+    });
+});
+</script>

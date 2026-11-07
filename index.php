@@ -371,7 +371,6 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
                     <h4 class="text-center fw-bold mb-1">
                         <i class="fas fa-lock me-2" style="color:#003366;"></i>Staff Login
                     </h4>
-                    <p class="text-center text-muted small mb-3">Admin · Dean · Secretary</p>
 
                     <?php if ($error): ?>
                         <div class="alert alert-danger d-flex align-items-center">
