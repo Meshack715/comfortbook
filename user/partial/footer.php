@@ -4,7 +4,7 @@ $root = rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/\\');
 if ($root === '' || $root === '\\') $root = '';
 ?>
         </main>
-        <footer class="py-4 bg-light mt-auto">
+        <footer class="py-4 bg-light mt-auto mb-5 mb-lg-0">
             <div class="container-fluid px-4">
                 <div class="d-flex align-items-center justify-content-between small text-muted">
                     <div>&copy; <?= date('Y') ?> University of Eastern Africa, Baraton · ComfortBook</div>
@@ -14,13 +14,17 @@ if ($root === '' || $root === '\\') $root = '';
         </footer>
     </div><!-- /#layoutSidenav_content -->
 </div><!-- /#layoutSidenav -->
+<script>document.querySelectorAll('table.table').forEach(function (t) { if (t.closest('.table-responsive')) return; var w = document.createElement('div'); w.className = 'table-responsive'; t.parentNode.insertBefore(w, t); w.appendChild(t); });</script>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script src="<?= $root ?>../../assets/js/scripts.js"></script>
+<?php require_once __DIR__ . '/../../includes/shell.php'; shell_bottom_tabs(shell_nav(), basename($_SERVER['PHP_SELF']), $root, $root . '/api/ai_chat.php'); shell_scripts($root); ?>
 <script>
+    // One handler only (two handlers toggled twice = no change). Tapping the dimmed page closes the menu on phones.
     document.getElementById('sidebarToggle')?.addEventListener('click', function (e) {
         e.preventDefault();
         document.body.classList.toggle('sb-sidenav-toggled');
+    });
+    document.getElementById('layoutSidenav_content')?.addEventListener('click', function (e) {
+        if (window.innerWidth < 992 && document.body.classList.contains('sb-sidenav-toggled') && e.target === this) document.body.classList.remove('sb-sidenav-toggled');
     });
 
     // Reset any spinning buttons when the page is restored from bfcache
@@ -134,11 +138,6 @@ function attachSidebarLoading() {
 
 document.addEventListener('DOMContentLoaded', attachSidebarLoading);
 
-// sidebar toggle
-document.getElementById('sidebarToggle')?.addEventListener('click', function (e) {
-    e.preventDefault();
-    document.body.classList.toggle('sb-sidenav-toggled');
-});
 </script>
 </body>
 </html>

@@ -14,6 +14,16 @@ if (!$sem) {
     redirect(APP_BASE.'/user/dashboard.php');
 }
 
+// ---- LATE BOOKING SWITCHES ----
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'late') {
+    $on = !empty($_POST['late_enabled']) ? '1' : '0'; $until = trim($_POST['late_until'] ?? '');
+    $fee = max(0, min(5000, (int)($_POST['late_fee'] ?? 200)));
+    set_config('late_booking_enabled', $on); set_config('late_booking_until', $until === '' ? '' : str_replace('T', ' ', $until) . (strlen($until) === 16 ? ':00' : '')); set_config('penalty_amount', (string)$fee);
+    audit_log($_SESSION['user_id'], null, 'late_booking_cfg', 'Late booking ' . ($on ? 'ON' : 'OFF') . ", fee KES $fee" . ($until ? ", until $until" : ''));
+    $_SESSION['flash'] = ['type' => 'success', 'msg' => 'Late booking settings saved.'];
+    redirect(APP_BASE . '/user/phase_windows.php');
+}
+
 // ---- SAVE ----
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $p1s = trim($_POST['phase1_start'] ?? '');
@@ -49,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "Set $gender windows for {$sem['name']}");
             $_SESSION['flash'] = ['type'=>'success','msg'=>'Phase windows saved.'];
         } catch (Throwable $e) {
-            $_SESSION['flash'] = ['type'=>'danger','msg'=>'Save failed: '.$e->getMessage()];
+            $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'save')];
         }
     } else {
         $_SESSION['flash'] = ['type'=>'danger','msg'=>implode(' ', $errors)];
@@ -65,8 +75,10 @@ function dt_local(?string $v): string {
 }
 
 $currentPhase = current_phase($gender);
-$phaseLabel = match($currentPhase) { 1=>'Phase 1 — Live', 2=>'Phase 2 — Live', default=>'Closed' };
-$phaseColor = match($currentPhase) { 1=>'primary', 2=>'success', default=>'secondary' };
+[$phaseLabel, $phaseColor] = window_badge($pdo, $gender);
+$_fake = ['id' => 0, 'gender' => $gender, 'current_room_id' => null, 'phase1_action' => 'none', 'late_fee_paid_sem' => null];
+$studentView = booking_state($pdo, $_fake, booking_sem_id($pdo));      // exactly what a student with no booking sees right now
+$allPast = !empty($win) && $win['phase1_end'] && $win['phase2_end'] && strtotime($win['phase2_end']) < time();
 
 // ---- Live countdown info ----
 $liveEnd   = null;
@@ -89,10 +101,10 @@ if ($liveEnd) {
 }
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
-<div id="layoutSidenav">
+<div id="layoutSidenav" class="d-lg-flex">
     <?php include __DIR__ . '/partial/sidebar.php'; ?>
-    <div id="layoutSidenav_content">
-        <main class="container-fluid px-4">
+    <div id="layoutSidenav_content" class="col-lg-9 col-xl-10">
+        <main class="container-fluid px-3 px-lg-4 pb-5 pb-lg-0">
 
             <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-3">
                 <div>
@@ -107,6 +119,25 @@ if ($liveEnd) {
                 <span class="badge bg-<?= $phaseColor ?> fs-6">
                     <i class="fas fa-circle me-1"></i><?= h($phaseLabel) ?>
                 </span>
+            </div>
+
+            <div class="alert alert-<?= h($studentView['tone']) ?> d-flex gap-2 align-items-start" role="status">
+                <i class="fas <?= h($studentView['icon']) ?> mt-1"></i>
+                <div class="small"><div class="fw-bold">What students in the <?= h($studentView['wing']) ?> see right now</div><?= h($studentView['headline']) ?>. <?= h($studentView['detail']) ?>
+                <?php if ($allPast): ?><div class="mt-1"><strong>These dates are already in the past.</strong> Students who have not booked can only book by paying the late fee. To reopen normal booking, set new dates below.</div><?php endif; ?></div>
+            </div>
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-body">
+                    <h2 class="h6 fw-bold mb-1"><i class="fas fa-stopwatch me-1 text-warning"></i>Late booking (after the windows end)</h2>
+                    <p class="small text-muted">A student who has not booked when the windows end can still book if they pay the late fee first (M-Pesa). Secretaries can also send them the prompt.</p>
+                    <form method="post" class="row g-2 align-items-end">
+                        <input type="hidden" name="form" value="late">
+                        <div class="col-12"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="lateOn" name="late_enabled" value="1" <?= get_config('late_booking_enabled', '1') === '1' ? 'checked' : '' ?>><label class="form-check-label" for="lateOn">Allow late booking</label></div></div>
+                        <div class="col-6 col-md-3"><label class="form-label small mb-1" for="lateFee">Late fee (KES)</label><input type="number" min="0" max="5000" class="form-control" id="lateFee" name="late_fee" value="<?= (int)get_config('penalty_amount', '200') ?>"></div>
+                        <div class="col-12 col-md-5"><label class="form-label small mb-1" for="lateUntil">Late booking ends (optional)</label><input type="datetime-local" class="form-control" id="lateUntil" name="late_until" value="<?= h(dt_local(get_config('late_booking_until', ''))) ?>"><div class="form-text">Leave empty to allow it until the next semester starts.</div></div>
+                        <div class="col-12 col-md-4"><button class="btn btn-primary w-100">Save late booking</button></div>
+                    </form>
+                </div>
             </div>
 
             <!-- Flash toast -->

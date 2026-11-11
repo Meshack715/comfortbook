@@ -362,8 +362,13 @@ body {
 /* ===== TABLES ===== */
 .table-responsive {
     border-radius: 0.5rem;
-    overflow: hidden;
+    overflow-x: auto !important;   /* was overflow:hidden, which cut tables off on phones */
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
 }
+.table-responsive > .table { min-width: 640px; }
+#layoutSidenav_content, .page-wrapper > * { min-width: 0; }   /* flex children may shrink, so inner scrollers can scroll */
 
 .table {
     margin-bottom: 0;

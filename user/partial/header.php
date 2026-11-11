@@ -2,6 +2,7 @@
 // user/partial/header.php
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/shell.php';
 
 $fullName    = $_SESSION['full_name'] ?? 'User';
 $username    = $_SESSION['username'] ?? 'guest';
@@ -9,16 +10,26 @@ $roleDisplay = role_display();
 
 $root = rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/\\');
 if ($root === '' || $root === '\\') $root = '';
+$curPage = basename($_SERVER['PHP_SELF']); $pageTitle = 'ComfortBook';
+foreach (shell_nav() as $__n) { if (in_array($curPage, $__n[4], true)) { $pageTitle = $__n[1]; break; } }
 ?>
 <!doctype html>
-<html lang="en">
+<html lang="en" <?= shell_theme_attr() ?>>
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#003366">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="manifest" href="<?= $root ?>/manifest.php">
+    <link rel="icon" href="<?= $root ?>/assets/logo/ueab.png">
+    <link rel="apple-touch-icon" href="<?= $root ?>/assets/logo/ueab.png">
+    <script>window.CB = {root: <?= json_encode($root) ?>, vapid: <?= json_encode(get_config('vapid_public', '')) ?>, ai: <?= json_encode(get_config('ai_enabled', '1') === '1') ?>};</script>
+    <script src="<?= $root ?>/assets/js/pwa.js" defer></script>
     <title><?= SITE_NAME ?> — <?= h($roleDisplay) ?></title>
 
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= $root ?>/assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
+    <link href="<?= $root ?>/assets/vendor/fontawesome/css/all.min.css" rel="stylesheet">
     <link href="<?= $root ?>/assets/css/styles.css" rel="stylesheet">
     <link href="<?= $root ?>/assets/css/ueab-theme.css" rel="stylesheet">
 
@@ -118,11 +129,37 @@ if ($root === '' || $root === '\\') $root = '';
 </head>
 <body class="sb-nav-fixed">
 
-<nav class="sb-topnav navbar navbar-expand navbar-dark bg-dark">
+<!-- PHONE: compact app bar (Bootstrap utilities only) -->
+<nav class="navbar fixed-top bg-primary navbar-dark d-lg-none px-3 shadow-sm" style="height:56px;z-index:1039" aria-label="App bar">
+    <a class="d-flex align-items-center gap-2 text-white text-decoration-none me-auto min-w-0" href="<?= $root ?>/user/dashboard.php">
+        <img src="<?= $root ?>/assets/logo/ueab.png" alt="" height="32" width="32" class="rounded-circle border border-2 border-warning flex-shrink-0">
+        <span class="fw-semibold text-truncate"><?= h($pageTitle) ?></span>
+    </a>
+    <button class="btn btn-link text-white px-2" type="button" data-bs-toggle="collapse" data-bs-target="#mSearch" aria-expanded="false" aria-controls="mSearch" aria-label="Search"><i class="fas fa-magnifying-glass"></i></button>
+    <button class="btn btn-link text-white px-2" type="button" data-notif-open aria-label="Notifications"><i class="fas fa-bell"></i></button>
+    <div class="dropdown">
+        <button class="btn btn-link text-white px-2" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Account"><i class="fas fa-circle-user fs-4"></i></button>
+        <ul class="dropdown-menu dropdown-menu-end shadow">
+            <li class="dropdown-header"><strong><?= h($fullName) ?></strong><br><small><?= h($roleDisplay) ?></small></li>
+            <li><a class="dropdown-item py-2" href="<?= $root ?>/user/profile.php"><i class="fas fa-id-badge fa-fw me-2"></i>My profile</a></li>
+            <li><a class="dropdown-item py-2 text-danger" href="<?= $root ?>/logout.php"><i class="fas fa-right-from-bracket fa-fw me-2"></i>Log out</a></li>
+        </ul>
+    </div>
+</nav>
+<div class="collapse fixed-top bg-body border-bottom shadow-sm p-2 d-lg-none" id="mSearch" style="top:56px;z-index:1038">
+    <div class="position-relative">
+        <input type="search" id="topSearchM" class="form-control" placeholder="Search students, rooms<?= is_admin() ? ', staff, blocks' : '' ?>…" autocomplete="off" aria-label="Search">
+        <span id="topSearchSpinnerM" class="topsearch-spinner d-none"><span class="spinner-border spinner-border-sm text-primary" style="width:.9rem;height:.9rem;"></span></span>
+        <div id="topSearchResultsM" class="topsearch-results"></div>
+    </div>
+</div>
+
+<!-- DESKTOP: classic top bar -->
+<nav class="sb-topnav navbar navbar-expand navbar-dark bg-dark d-none d-lg-flex">
     <a class="navbar-brand ps-3" href="<?= $root ?>/user/dashboard.php">
         <img src="<?= $root ?>/assets/logo/ueab.png" alt="UEAB" height="35"
              class="d-inline-block align-text-top me-2 rounded-circle">
-        <span>ComfortBook</span>
+        <span class="d-none d-sm-inline">ComfortBook</span>
     </a>
 
     <button class="btn btn-link btn-sm order-1 order-lg-0 me-4 me-lg-0" id="sidebarToggle">
@@ -139,6 +176,13 @@ if ($root === '' || $root === '\\') $root = '';
             <span class="spinner-border spinner-border-sm text-warning" style="width:.9rem;height:.9rem;"></span>
         </span>
         <div id="topSearchResults" class="topsearch-results"></div>
+    </div>
+
+    <div class="d-flex align-items-center gap-2 me-2">
+        <button type="button" class="btn btn-sm btn-warning d-none" data-pwa-install><i class="fas fa-download me-1" aria-hidden="true"></i><span class="d-none d-md-inline">Install</span></button>
+        <span class="d-none d-md-inline"><button type="button" class="btn btn-sm btn-outline-light d-none" id="pushBtn" aria-label="Notifications"><i class="fas fa-bell-slash" aria-hidden="true"></i></button></span>
+        <button type="button" class="btn btn-sm btn-outline-warning d-none d-md-inline-block" data-notif-open aria-label="Notification centre"><i class="fas fa-inbox" aria-hidden="true"></i></button>
+        <?php if (get_config('ai_enabled', '1') === '1'): ?><button type="button" class="btn btn-sm btn-outline-warning" data-ai-open><i class="fas fa-wand-magic-sparkles me-1" aria-hidden="true"></i><span class="d-none d-md-inline">Assistant</span></button><?php endif; ?>
     </div>
 
     <ul class="navbar-nav ms-auto ms-md-0 me-3 me-lg-4">
@@ -168,10 +212,11 @@ if ($root === '' || $root === '\\') $root = '';
 </nav>
 
 <script>
-(function () {
-    const input    = document.getElementById('topSearch');
-    const results  = document.getElementById('topSearchResults');
-    const spinner  = document.getElementById('topSearchSpinner');
+function cbBindSearch(inputId, resultsId, spinnerId) {
+    const input    = document.getElementById(inputId);
+    const results  = document.getElementById(resultsId);
+    const spinner  = document.getElementById(spinnerId);
+    if (!input) return;
     const searchUrl = '<?= $root ?>/api/search.php';
 
     let timer    = null;
@@ -329,5 +374,7 @@ if ($root === '' || $root === '\\') $root = '';
         hide();
         spinner?.classList.add('d-none');
     });
-})();
+}
+cbBindSearch('topSearch', 'topSearchResults', 'topSearchSpinner');
+cbBindSearch('topSearchM', 'topSearchResultsM', 'topSearchSpinnerM');
 </script>

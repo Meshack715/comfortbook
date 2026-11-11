@@ -3,6 +3,7 @@
 require_once __DIR__ . '/../includes/config.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/mailer.php';
+require_once __DIR__ . '/../includes/notify.php';
 require_role(['dean_men','dean_women','secretary_men','secretary_women']);
 
 $gender = gender_filter();
@@ -57,20 +58,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 audit_log($_SESSION['user_id'], $booking['student_id'], 'booking_approve',
                     "Confirmed booking #$bid for {$booking['reg_number']} → {$booking['room_number']} (sem #$targetSem)");
 
-                @send_confirmation_email(
-                    $booking['email'],
-                    $booking['full_name'],
-                    $booking['room_number'],
-                    $booking['block_name']
-                );
+                notify_student($pdo, (int)$booking['student_id'], 'Booking confirmed', 'Your room ' . $booking['room_number'] . ' (' . $booking['block_name'] . ') is confirmed.', '/student/book.php', 'approved');
+                booking_emails($pdo, (int)$bid, 'approved');
 
                 $_SESSION['flash'] = [
                     'type'=>'success',
                     'msg'=>'Booking confirmed · email sent. Room assignment happens when the semester is activated.',
                 ];
             } catch (Throwable $e) {
-                $pdo->rollBack();
-                $_SESSION['flash'] = ['type'=>'danger','msg'=>'Approve failed: '.$e->getMessage()];
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'approve')];
             }
             redirect(APP_BASE . '/user/approvals.php');
         }
@@ -96,13 +93,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->commit();
 
+                if (function_exists('beds_reconcile')) { try { beds_reconcile($pdo); } catch (Throwable $e) {} }
+                booking_emails($pdo, (int)$bid, 'rejected', $reason);
+                notify_student($pdo, (int)$booking['student_id'], 'Booking not approved', $reason . ' You can choose another bed.', '/student/explore.php', 'rejected');
                 audit_log($_SESSION['user_id'], $booking['student_id'], 'booking_reject',
                     "Rejected booking #$bid: $reason");
 
                 $_SESSION['flash'] = ['type'=>'success','msg'=>'Booking rejected and room freed.'];
             } catch (Throwable $e) {
-                $pdo->rollBack();
-                $_SESSION['flash'] = ['type'=>'danger','msg'=>'Reject failed: '.$e->getMessage()];
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'reject')];
             }
             redirect(APP_BASE . '/user/approvals.php');
         }
@@ -137,8 +137,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 audit_log($_SESSION['user_id'], $booking['student_id'], 'booking_cancel', "Dean cancelled booking #$bid");
                 $_SESSION['flash'] = ['type'=>'success','msg'=>'Confirmed booking cancelled. Room freed.'];
             } catch (Throwable $e) {
-                $pdo->rollBack();
-                $_SESSION['flash'] = ['type'=>'danger','msg'=>'Cancel failed: '.$e->getMessage()];
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'cancel')];
             }
             redirect(APP_BASE . '/user/approvals.php');
         }
@@ -243,10 +243,10 @@ function app_url(array $overrides = []): string {
 }
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
-<div id="layoutSidenav">
+<div id="layoutSidenav" class="d-lg-flex">
     <?php include __DIR__ . '/partial/sidebar.php'; ?>
-    <div id="layoutSidenav_content">
-        <main class="container-fluid px-4">
+    <div id="layoutSidenav_content" class="col-lg-9 col-xl-10">
+        <main class="container-fluid px-3 px-lg-4 pb-5 pb-lg-0">
 
             <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-3">
                 <div>
@@ -258,7 +258,7 @@ function app_url(array $overrides = []): string {
                         <?php endif; ?>
                     </p>
                 </div>
-                <span class="badge bg-info fs-6">
+                <span class="badge text-bg-info fs-6">
                     <i class="fas fa-clipboard-list me-1"></i>
                     <?= number_format($totalAll) ?> total booking<?= $totalAll===1?'':'s' ?>
                 </span>
@@ -286,15 +286,15 @@ function app_url(array $overrides = []): string {
             <!-- Status chips -->
             <div class="d-flex flex-wrap gap-2 mb-3">
                 <a href="<?= h(app_url(['status'=>'pending_approval','page'=>1])) ?>"
-                   class="btn btn-sm <?= $status==='pending_approval'?'btn-info':'btn-outline-info' ?>">
+                   class="btn btn-sm <?= $status==='pending_approval'?'btn-info':'btn-outline-dark' ?>">
                     Awaiting <span class="badge bg-light text-dark ms-1"><?= number_format($counts['pending_approval']) ?></span>
                 </a>
                 <a href="<?= h(app_url(['status'=>'confirmed','page'=>1])) ?>"
-                   class="btn btn-sm <?= $status==='confirmed'?'btn-success':'btn-outline-success' ?>">
+                   class="btn btn-sm <?= $status==='confirmed'?'btn-success':'btn-outline-dark' ?>">
                     Confirmed <span class="badge bg-light text-dark ms-1"><?= number_format($counts['confirmed']) ?></span>
                 </a>
                 <a href="<?= h(app_url(['status'=>'cancelled','page'=>1])) ?>"
-                   class="btn btn-sm <?= $status==='cancelled'?'btn-danger':'btn-outline-danger' ?>">
+                   class="btn btn-sm <?= $status==='cancelled'?'btn-danger':'btn-outline-dark' ?>">
                     Cancelled <span class="badge bg-light text-dark ms-1"><?= number_format($counts['cancelled']) ?></span>
                 </a>
                 <a href="<?= h(app_url(['status'=>'all','page'=>1])) ?>"
@@ -324,8 +324,8 @@ function app_url(array $overrides = []): string {
                             <span class="btn-label"><i class="fas fa-search me-1"></i>Search</span>
                             <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm"></span></span>
                         </button>
-                        <a href="approvals.php?status=<?= h($status) ?>" class="btn btn-outline-secondary btn-sm">
-                            <i class="fas fa-times"></i>
+                        <a href="approvals.php?status=<?= h($status) ?>" class="btn btn-outline-secondary btn-sm" aria-label="Clear search">
+                            <i class="fas fa-times" aria-hidden="true"></i>
                         </a>
                     </div>
                 </form>
@@ -408,8 +408,8 @@ function app_url(array $overrides = []): string {
                                                     data-bs-target="#rejectModal"
                                                     data-bid="<?= (int)$b['id'] ?>"
                                                     data-name="<?= h($b['full_name']) ?>"
-                                                    data-room="<?= h($b['room_number']) ?>">
-                                                <i class="fas fa-times"></i>
+                                                    data-room="<?= h($b['room_number']) ?>" aria-label="Reject <?= h($b['full_name']) ?>">
+                                                <i class="fas fa-times" aria-hidden="true"></i>
                                             </button>
                                         <?php elseif ($b['status'] === 'confirmed' && $isDean): ?>
                                             <button class="btn btn-sm btn-outline-danger"

@@ -110,12 +110,16 @@ $penalty_revenue = (int)$stmt->fetchColumn();
 // PHASE
 // ------------------------------------------------------------
 $phase = current_phase($gender);
-$phaseLabel = match($phase) {
-    1 => 'Phase 1 — Keep or Release',
-    2 => 'Phase 2 — Move Window',
-    default => 'Closed (between phases)',
+$_ws = $gender ? window_status($pdo, $gender) : ['state' => 'n/a'];
+$phaseLabel = match(true) {
+    $phase === 1 => 'Phase 1 — Keep or Release',
+    $phase === 2 => 'Phase 2 — Move Window',
+    $_ws['state'] === 'before' => 'Booking has not opened yet',
+    $_ws['state'] === 'after' => get_config('late_booking_enabled', '1') === '1' ? 'Windows ended: late booking (with fee) is open' : 'Windows ended: booking closed',
+    $_ws['state'] === 'not_set' => 'Booking dates not set',
+    default => 'Between phases',
 };
-$phaseColor = match($phase) { 1=>'primary', 2=>'success', default=>'secondary' };
+$phaseColor = match(true) { $phase === 1 => 'primary', $phase === 2 => 'success', $_ws['state'] === 'after' => 'warning', default => 'secondary' };
 
 $myWindow = null;
 if ($activeSid && $gender) {
@@ -187,11 +191,11 @@ function phase_badge(?int $p): string {
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
 
-<div id="layoutSidenav">
+<div id="layoutSidenav" class="d-lg-flex">
     <?php include __DIR__ . '/partial/sidebar.php'; ?>
 
-    <div id="layoutSidenav_content">
-        <main class="container-fluid px-4">
+    <div id="layoutSidenav_content" class="col-lg-9 col-xl-10">
+        <main class="container-fluid px-3 px-lg-4 pb-5 pb-lg-0">
 
             <!-- ============ HEADER ============ -->
             <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-3">
@@ -303,7 +307,7 @@ function phase_badge(?int $p): string {
                             <h6 class="mb-0 fw-bold">
                                 <i class="fas <?= $w['icon'] ?> text-<?= $w['color'] ?> me-2"></i><?= h($w['label']) ?>
                             </h6>
-                            <?= phase_badge($ph) ?>
+                            <?php [$bt, $bc] = window_badge($pdo, $w['gender']); ?><span class="badge bg-<?= $bc ?>"><i class="fas fa-circle me-1"></i><?= h($bt) ?></span>
                         </div>
                         <div class="card-body small">
                             <div class="row g-2">
@@ -380,7 +384,7 @@ function phase_badge(?int $p): string {
                                 <div class="d-flex justify-content-between">
                                     <div>
                                         <div class="text-muted small text-uppercase">Pending</div>
-                                        <div class="fs-3 fw-bold text-warning"><?= number_format($pending_approvals) ?></div>
+                                        <div class="fs-3 fw-bold text-warning-emphasis"><?= number_format($pending_approvals) ?></div>
                                     </div>
                                     <div class="stat-icon bg-warning-subtle text-warning">
                                         <i class="fas fa-clock"></i>
@@ -428,7 +432,7 @@ function phase_badge(?int $p): string {
                     <div class="card border-0 shadow-sm h-100">
                         <div class="card-body">
                             <div class="text-muted small text-uppercase">Released</div>
-                            <div class="fs-3 fw-bold text-info"><?= number_format($released_rooms) ?></div>
+                            <div class="fs-3 fw-bold text-primary"><?= number_format($released_rooms) ?></div>
                             <div class="small text-muted">Available for moves</div>
                         </div>
                     </div>
@@ -446,7 +450,7 @@ function phase_badge(?int $p): string {
                     <div class="card border-0 shadow-sm h-100">
                         <div class="card-body">
                             <div class="text-muted small text-uppercase">Penalty Revenue</div>
-                            <div class="fs-3 fw-bold text-warning">KES <?= number_format($penalty_revenue) ?></div>
+                            <div class="fs-3 fw-bold text-warning-emphasis">KES <?= number_format($penalty_revenue) ?></div>
                             <div class="small text-muted">From late bookers</div>
                         </div>
                     </div>

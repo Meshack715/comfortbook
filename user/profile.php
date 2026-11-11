@@ -72,10 +72,10 @@ $stmt->execute([$uid]);
 $activity = $stmt->fetchAll();
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
-<div id="layoutSidenav">
+<div id="layoutSidenav" class="d-lg-flex">
     <?php include __DIR__ . '/partial/sidebar.php'; ?>
-    <div id="layoutSidenav_content">
-        <main class="container-fluid px-4">
+    <div id="layoutSidenav_content" class="col-lg-9 col-xl-10">
+        <main class="container-fluid px-3 px-lg-4 pb-5 pb-lg-0">
 
             <div class="mt-4 mb-3">
                 <h4 class="mb-1"><i class="fas fa-id-badge text-primary me-2"></i>My Profile</h4>

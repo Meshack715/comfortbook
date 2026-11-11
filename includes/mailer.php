@@ -96,3 +96,18 @@ function send_welcome_email(string $to, string $name, string $roomNumber, string
     ";
     return send_mail($to, $name, "ComfortBook — Booking Confirmed", email_template("Booking Confirmed", $body));
 }
+
+/* ---------------------------------------------------------------- booking emails (student AND hostel staff) */
+function send_confirmation_email(string $to, string $name, string $roomNumber, string $blockName): bool {
+    $body = "
+      <p>Hello <strong>" . h($name) . "</strong>,</p>
+      <p>Good news: your booking has been <strong style='color:#198754;'>approved</strong>.</p>
+      <div style='background:#f0f8f4;border-left:4px solid #198754;padding:14px 16px;border-radius:8px;margin:16px 0;'>
+        <div style='font-size:12px;color:#666;text-transform:uppercase;'>Your Room</div>
+        <div style='font-size:20px;font-weight:700;color:#003366;'>" . h($roomNumber) . "</div>
+        <div style='font-size:13px;color:#666;'>" . h($blockName) . "</div>
+      </div>
+      <p style='font-size:13px;color:#666;'>Your room is assigned when the semester starts. You will get another email then.</p>
+    ";
+    return send_mail($to, $name, "ComfortBook — Booking Approved", email_template("Booking Approved", $body));
+}

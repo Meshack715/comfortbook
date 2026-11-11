@@ -15,9 +15,11 @@ $done  = false;
 if (!$reset) {
     ?>
     <!doctype html><html><head><meta charset="utf-8"><title>Invalid Link</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    </head><body class="bg-light"><div class="container py-5">
+    <link href="<?= defined("APP_BASE") ? APP_BASE : "" ?>/assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
+    <link href="<?= defined("APP_BASE") ? APP_BASE : "" ?>/assets/vendor/fontawesome/css/all.min.css" rel="stylesheet">
+        <link href="<?= APP_BASE ?>/assets/css/styles.css" rel="stylesheet">
+    <link href="<?= APP_BASE ?>/assets/css/ueab-theme.css" rel="stylesheet">
+</head><body class="bg-light"><div class="container py-5">
     <div class="card shadow-sm border-0" style="max-width:520px;margin:auto;">
       <div class="card-body text-center p-5">
         <i class="fas fa-link-slash fa-3x text-danger mb-3"></i>
@@ -59,9 +61,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title><?= SITE_NAME ?> — Set Password</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="<?= APP_BASE ?>/assets/css/ueab-theme.css" rel="stylesheet">
+    <link href="<?= defined("APP_BASE") ? APP_BASE : "" ?>/assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
+    <link href="<?= defined("APP_BASE") ? APP_BASE : "" ?>/assets/vendor/fontawesome/css/all.min.css" rel="stylesheet">
 </head>
 <body class="bg-light">
 <div class="container">
@@ -145,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
     </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="<?= defined("APP_BASE") ? APP_BASE : "" ?>/assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <script>
 document.getElementById('setForm')?.addEventListener('submit', function () {
     const btn = document.getElementById('setBtn');

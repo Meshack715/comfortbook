@@ -97,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ];
                     } catch (Throwable $e) {
                         $pdo->rollBack();
-                        $_SESSION['flash'] = ['type'=>'danger','msg'=>'Assign failed: '.$e->getMessage()];
+                        $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'assign')];
                     }
                 }
             }
@@ -129,7 +129,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['flash'] = ['type'=>'success','msg'=>'Student unassigned. Room freed if now empty.'];
                 } catch (Throwable $e) {
                     $pdo->rollBack();
-                    $_SESSION['flash'] = ['type'=>'danger','msg'=>'Unassign failed: '.$e->getMessage()];
+                    $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'unassign')];
                 }
             }
         }
@@ -176,7 +176,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['flash'] = ['type'=>'success','msg'=>"Bulk-assigned $assigned student".($assigned===1?'':'s')."."];
         } catch (Throwable $e) {
             $pdo->rollBack();
-            $_SESSION['flash'] = ['type'=>'danger','msg'=>'Bulk assign failed: '.$e->getMessage()];
+            $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'bulk assign')];
         }
         redirect(APP_BASE . '/user/room_assignment.php');
     }
@@ -251,10 +251,10 @@ $stmt->execute([$gender, "%$gender%"]);
 $recentActivity = $stmt->fetchAll();
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
-<div id="layoutSidenav">
+<div id="layoutSidenav" class="d-lg-flex">
     <?php include __DIR__ . '/partial/sidebar.php'; ?>
-    <div id="layoutSidenav_content">
-        <main class="container-fluid px-4">
+    <div id="layoutSidenav_content" class="col-lg-9 col-xl-10">
+        <main class="container-fluid px-3 px-lg-4 pb-5 pb-lg-0">
 
             <!-- Header -->
             <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-3">

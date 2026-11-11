@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/includes/shell.php';
 // index.php — staff login
 require_once __DIR__ . '/includes/config.php';
 require_once __DIR__ . '/includes/auth.php';
@@ -105,81 +106,11 @@ $roleIcon = match($welcomeRole) {
 $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
 ?>
 <!doctype html>
-<html lang="en">
+<html lang="en" <?= shell_theme_attr() ?>>
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= SITE_NAME ?> — <?= $showSuccessScreen ? 'Welcome' : ($lockedUntil ? 'Locked' : 'Login') ?></title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="<?= APP_BASE ?>/assets/css/ueab-theme.css" rel="stylesheet">
+    <?php shell_head_tags($showSuccessScreen ? 'Welcome' : ($lockedUntil ? 'Locked' : 'Login'), APP_BASE); ?>
     <link href="<?= APP_BASE ?>/assets/css/styles.css" rel="stylesheet">
-    <style>
-        .success-card, .lockout-card { animation: fadeUp .5s ease-out both; }
-        @keyframes fadeUp {
-            from { opacity: 0; transform: translateY(12px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-        .countdown-bar {
-            height: 6px;
-            background: linear-gradient(90deg, #198754, #20c997);
-            border-radius: 3px;
-            width: 100%;
-            transform-origin: left center;
-            animation: shrink 3s linear forwards;
-        }
-        @keyframes shrink {
-            from { transform: scaleX(1); }
-            to   { transform: scaleX(0); }
-        }
-        .user-initials {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 84px; height: 84px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #003366, #002244);
-            color: #fff;
-            font-weight: 700;
-            font-size: 2rem;
-            box-shadow: 0 8px 24px rgba(0,51,102,.25);
-        }
-        /* Lockout circle */
-        .lockout-circle {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 100px; height: 100px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #dc3545, #b02a37);
-            color: #fff;
-            box-shadow: 0 8px 24px rgba(220,53,69,.3);
-            animation: pulse 2s ease-in-out infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { box-shadow: 0 8px 24px rgba(220,53,69,.3); }
-            50%      { box-shadow: 0 8px 36px rgba(220,53,69,.55); }
-        }
-        .lockout-count {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: #dc3545;
-            line-height: 1;
-            font-variant-numeric: tabular-nums;
-            letter-spacing: .05em;
-        }
-        .lockout-bar {
-            height: 8px;
-            background: #fee;
-            border-radius: 4px;
-            overflow: hidden;
-        }
-        .lockout-bar > div {
-            height: 100%;
-            background: linear-gradient(90deg, #dc3545, #f86c6c);
-            transition: width 1s linear;
-        }
-    </style>
+    <link href="<?= APP_BASE ?>/assets/css/ueab-theme.css" rel="stylesheet">
 </head>
 <body class="bg-light">
 
@@ -192,38 +123,38 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
             <!-- ============================================================
                  SUCCESS SCREEN
                  ============================================================ -->
-            <div class="card shadow-lg border-0 success-card overflow-hidden">
+            <div class="card shadow-lg border-0 overflow-hidden">
                 <div class="card-body p-5 text-center">
                     <?php
                     $parts = preg_split('/\s+/', trim($welcomeName));
                     $initials = strtoupper(substr($parts[0] ?? '', 0, 1) . substr($parts[count($parts) - 1] ?? '', 0, 1));
                     ?>
                     <div class="mb-3">
-                        <div class="user-initials"><?= h($initials ?: 'U') ?></div>
+                        <div class="rounded-circle bg-primary text-white d-inline-flex align-items-center justify-content-center fw-bold fs-2 shadow" style="width:84px;height:84px"><?= h($initials ?: 'U') ?></div>
                     </div>
                     <h3 class="fw-bold mb-1">Welcome, <?= h($welcomeName) ?>!</h3>
                     <p class="text-muted small mb-4">
                         <i class="fas <?= h($roleIcon) ?> me-1"></i><?= h($welcomeRole) ?>
                     </p>
-                    <div class="alert alert-light text-start small mb-4" style="border-left:3px solid #003366;">
+                    <div class="alert alert-light text-start small mb-4 border-start border-3 border-primary">
                         <i class="fas fa-circle-info text-primary me-1"></i>
                         <?= h($roleSummary) ?>
                     </div>
                     <div class="mb-2">
                         <div class="small text-muted">
                             Redirecting to your dashboard in
-                            <strong id="countdown" style="color:#003366;">3</strong>
+                            <strong id="countdown" class="text-primary">3</strong>
                             second<span id="plural">s</span>...
                         </div>
                     </div>
-                    <div class="countdown-bar mb-4"></div>
-                    <a href="<?= h($dashboardUrl) ?>" class="btn btn-primary" style="background:#003366;border-color:#003366;">
+                    <div class="progress mb-4" style="height:6px"><div class="progress-bar bg-success" id="cdBar" style="width:100%"></div></div>
+                    <a href="<?= h($dashboardUrl) ?>" class="btn btn-primary">
                         <i class="fas fa-arrow-right me-1"></i>Go Now
                     </a>
                 </div>
                 <div class="card-footer bg-white border-0 pb-4 text-center">
                     <small class="text-muted">
-                        <i class="fas fa-shield-alt me-1" style="color:#003366;"></i>
+                        <i class="fas fa-shield-alt me-1 text-primary"></i>
                         Secure session started · Actions are logged
                     </small>
                 </div>
@@ -245,6 +176,7 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
                         }
                         el.textContent = n;
                         plu.textContent = n === 1 ? '' : 's';
+                        document.getElementById('cdBar').style.width = (n / 3 * 100) + '%';
                     }, 1000);
                 })();
             </script>
@@ -254,10 +186,10 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
             <!-- ============================================================
                  LOCKOUT SCREEN — form is fully hidden
                  ============================================================ -->
-            <div class="card shadow-lg border-0 lockout-card overflow-hidden">
+            <div class="card shadow-lg border-0 overflow-hidden">
                 <div class="card-body p-5 text-center">
                     <div class="mb-4">
-                        <div class="lockout-circle">
+                        <div class="rounded-circle bg-danger text-white d-inline-flex align-items-center justify-content-center shadow" style="width:100px;height:100px">
                             <i class="fas fa-lock fa-3x"></i>
                         </div>
                     </div>
@@ -272,14 +204,14 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
 
                     <div class="mb-3">
                         <div class="small text-muted text-uppercase mb-2">Try again in</div>
-                        <div class="lockout-count" id="lockCount">--:--</div>
+                        <div class="display-5 fw-bold text-danger font-monospace" id="lockCount">--:--</div>
                     </div>
 
-                    <div class="lockout-bar mb-4">
-                        <div id="lockBar" style="width:100%;"></div>
+                    <div class="progress mb-4" style="height:8px">
+                        <div id="lockBar" class="progress-bar bg-danger" style="width:100%;"></div>
                     </div>
 
-                    <div class="alert alert-light small mb-4" style="border-left:3px solid #ffc107;">
+                    <div class="alert alert-light small mb-4 border-start border-3 border-warning">
                         <i class="fas fa-circle-info text-warning me-1"></i>
                         For your security, sign-in has been paused for a short time.
                         Do not keep retrying — the lockout will only get longer.
@@ -294,7 +226,7 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
                 </div>
                 <div class="card-footer bg-white border-0 pb-4 text-center">
                     <small class="text-muted">
-                        <i class="fas fa-shield-alt me-1" style="color:#003366;"></i>
+                        <i class="fas fa-shield-alt me-1 text-primary"></i>
                         ComfortBook · UEAB Hostel Booking
                     </small>
                 </div>
@@ -326,7 +258,7 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
 
                         if (remaining <= 0) {
                             el.textContent = '00:00';
-                            el.style.color = '#198754';
+                            el.classList.replace('text-danger','text-success');
                             bar.style.width = '0%';
                             retryBtn.disabled = false;
                             retryBtn.classList.remove('btn-outline-secondary');
@@ -349,19 +281,17 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
                  NORMAL LOGIN SCREEN
                  ============================================================ -->
             <div class="card shadow-lg border-0 mb-4 overflow-hidden">
-                <div class="card-body p-5 text-center"
-                     style="background: linear-gradient(135deg,#003366 0%,#002244 100%);">
+                <div class="card-body p-5 text-center bg-primary">
                     <div class="mb-4">
                         <img src="<?= APP_BASE ?>/assets/logo/ueab.png"
-                             alt="UEAB" class="rounded-circle border border-3 border-light shadow"
-                             style="width:100px;height:100px;object-fit:cover;">
+                             alt="UEAB" class="rounded-circle border border-3 border-light shadow object-fit-cover" width="100" height="100">
                     </div>
-                    <h2 class="text-white fw-bold mb-1" style="font-size:1.25rem;">
+                    <h2 class="text-white fw-bold mb-1 fs-5">
                         UNIVERSITY OF EASTERN AFRICA, BARATON
                     </h2>
-                    <p class="text-white-50 mb-0">ComfortBook — Hostel Booking System</p>
+                    <p class="text-white mb-0">ComfortBook — Hostel Booking System</p>
                     <div class="d-flex justify-content-center mt-3">
-                        <div style="width:50px;height:3px;background:#ffc107;border-radius:3px;"></div>
+                        <div class="bg-warning rounded-pill" style="width:50px;height:3px"></div>
                     </div>
                 </div>
             </div>
@@ -369,7 +299,7 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
             <div class="card shadow-lg border-0">
                 <div class="card-body p-4">
                     <h4 class="text-center fw-bold mb-1">
-                        <i class="fas fa-lock me-2" style="color:#003366;"></i>Staff Login
+                        <i class="fas fa-lock me-2 text-primary"></i>Staff Login
                     </h4>
 
                     <?php if ($error): ?>
@@ -405,9 +335,8 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
                                    placeholder="Password" required>
                             <label for="password"><i class="fas fa-lock text-primary me-2"></i>Password</label>
                             <button type="button"
-                                    class="btn btn-outline-secondary position-absolute end-0 top-50 translate-middle-y me-2"
-                                    style="border:none;background:transparent;z-index:10;"
-                                    id="togglePassword">
+                                    class="btn btn-link text-body-secondary position-absolute end-0 top-50 translate-middle-y me-2 border-0"
+                                    id="togglePassword" aria-label="Show or hide password">
                                 <i class="fas fa-eye" id="toggleIcon"></i>
                             </button>
                         </div>
@@ -423,8 +352,7 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
                         </div>
 
                         <div class="d-grid gap-2">
-                            <button type="submit" class="btn btn-primary btn-lg" id="loginBtn"
-                                    style="background:#003366;border-color:#003366;">
+                            <button type="submit" class="btn btn-primary btn-lg" id="loginBtn">
                                 <span class="btn-label"><i class="fas fa-sign-in-alt me-2"></i>Sign In</span>
                                 <span class="btn-spin d-none"><span class="spinner-border spinner-border-sm me-2"></span>Signing in...</span>
                             </button>
@@ -443,7 +371,7 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
 
                 <div class="card-footer bg-white border-0 pb-4 text-center">
                     <small class="text-muted">
-                        <i class="fas fa-shield-alt me-1" style="color:#003366;"></i>
+                        <i class="fas fa-shield-alt me-1 text-primary"></i>
                         Secure University System · All actions are logged
                     </small><br>
                     <small class="text-muted">&copy; <?= date('Y') ?> University of Eastern Africa, Baraton</small>
@@ -456,7 +384,7 @@ $lockMinutes = $lockedUntil ? (int)ceil(($lockedUntil - time()) / 60) : 0;
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="<?= defined("APP_BASE") ? APP_BASE : "" ?>/assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <script>
 document.getElementById('togglePassword')?.addEventListener('click', function () {
     const p = document.getElementById('password');

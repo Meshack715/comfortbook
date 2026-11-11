@@ -44,4 +44,6 @@ $pdo->prepare("
 ")->execute([$ref, $bookingId]);
 
 audit_log(null, $sid, 'mpesa_submitted', "Ref $ref for booking #$bookingId");
+require_once __DIR__ . '/../includes/notify.php'; booking_emails($pdo, (int)$bookingId, 'submitted');
+try { $g = $pdo->prepare("SELECT s.full_name, s.gender FROM students s WHERE s.id=?"); $g->execute([$sid]); $gs = $g->fetch(); if ($gs) notify_staff($pdo, ['secretary','dean'], $gs['gender'], 'Booking awaiting approval', $gs['full_name'] . ' paid and is waiting for approval.', '/user/approvals.php', 'approval'); } catch (Throwable $e) {}
 echo json_encode(['ok'=>true]);

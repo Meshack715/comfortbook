@@ -1,13 +1,16 @@
 <?php
 // includes/config.php
+if (defined('COMFORTBOOK_CONFIG_LOADED')) return;
+define('COMFORTBOOK_CONFIG_LOADED', true);
+
 if (session_status() === PHP_SESSION_NONE) session_start();
 date_default_timezone_set('Africa/Nairobi');
 
 // ---- DATABASE ----
-$DB_HOST = '127.0.0.1';
+$DB_HOST = 'localhost';
 $DB_NAME = 'comfortbook_db';
-$DB_USER = 'root';
-$DB_PASS = '';
+$DB_USER = 'comfortbook_db';
+$DB_PASS = 'jLbSB7KB8aFcNS3L';
 
 $options = [
     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
@@ -19,19 +22,29 @@ try {
     $pdo = new PDO("mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4", $DB_USER, $DB_PASS, $options);
     $pdo->exec("SET time_zone = '+03:00'");
 } catch (PDOException $e) {
-    die("Database connection failed: " . $e->getMessage());
+    error_log('[cb] database connection failed: ' . $e->getMessage());
+    http_response_code(503);
+    die("The system cannot reach its database right now. Please try again in a minute. If it keeps happening, tell the technical support person.");
 }
 
+// Optional per-machine overrides (not committed). MUST NOT be named config.php —
+// that would re-include this very file and trigger "Cannot redeclare ...".
+if (is_file(__DIR__ . '/config.local.php')) require __DIR__ . '/config.local.php';
+
 // ---- SMTP (Brevo) ----
-define('SMTP_HOST',       'smtp-relay.brevo.com');
-define('SMTP_USERNAME',   '97b8dc001@smtp-brevo.com');
-define('SMTP_PASSWORD',   'TjpsE6mtCfkJ9d5I');
-define('SMTP_PORT',       587);
-define('SMTP_FROM_EMAIL', 'pantherzulu7@gmail.com');
-define('SMTP_FROM_NAME',  'ComfortBook — UEAB Hostel');
+foreach ([
+    'SMTP_HOST'       => 'smtp-relay.brevo.com',
+    'SMTP_USERNAME'   => '97b8dc001@smtp-brevo.com',
+    'SMTP_PASSWORD'   => 'TjpsE6mtCfkJ9d5I',
+    'SMTP_PORT'       => 587,
+    'SMTP_FROM_EMAIL' => 'pantherzulu7@gmail.com',
+    'SMTP_FROM_NAME'  => 'ComfortBook — UEAB Hostel',
+] as $k => $v) {
+    if (!defined($k)) define($k, $v);
+}
 
 // ---- SYSTEM ----
-define('SITE_NAME', 'ComfortBook');
+if (!defined('SITE_NAME')) define('SITE_NAME', 'ComfortBook');
 
 // ==========================================================
 // ROOT PATHS
@@ -59,7 +72,7 @@ if (!defined('APP_BASE')) {
 // Full site URL — useful for emails, magic links
 if (!defined('SITE_URL')) {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $host   = $_SERVER['HTTP_HOST'] ?? 'comfortbook.dominium.co.ke';
     define('SITE_URL', $scheme . '://' . $host . APP_BASE);
 }
 
@@ -82,12 +95,39 @@ function get_config(string $key, $default = null) {
     return $cache[$key] ?? $default;
 }
 
-function set_config(string $key, string $value): void {
-    $pdo = $GLOBALS['pdo'] ?? null;
-    if (!$pdo) return;
-    $pdo->prepare("INSERT INTO config (config_key, config_value) VALUES (?, ?)
-                   ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)")
-        ->execute([$key, $value]);
+/**
+ * config.config_value was VARCHAR(255) in old schema. A list of API keys longer
+ * than that would be silently truncated. Widen it to TEXT once, lazily.
+ * Guarded with function_exists so this file is safe to include more than once.
+ */
+if (!function_exists('config_widen')) {
+    function config_widen(PDO $pdo): void {
+        static $done = false;
+        if ($done) return;
+        $done = true;
+        try {
+            $t = $pdo->query("SELECT DATA_TYPE FROM information_schema.COLUMNS
+                              WHERE TABLE_SCHEMA = DATABASE()
+                                AND TABLE_NAME = 'config'
+                                AND COLUMN_NAME = 'config_value'")->fetchColumn();
+            if ($t && !in_array(strtolower((string)$t), ['text', 'mediumtext'], true)) {
+                $pdo->exec("ALTER TABLE config MODIFY config_value TEXT NOT NULL");
+            }
+        } catch (Throwable $e) {
+            error_log('config_widen: ' . $e->getMessage());
+        }
+    }
+}
+
+if (!function_exists('set_config')) {
+    function set_config(string $key, string $value): void {
+        $pdo = $GLOBALS['pdo'] ?? null;
+        if (!$pdo) return;
+        if (strlen($value) > 200) config_widen($pdo);
+        $pdo->prepare("INSERT INTO config (config_key, config_value) VALUES (?, ?)
+                       ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)")
+            ->execute([$key, $value]);
+    }
 }
 
 // ==========================================================
@@ -185,3 +225,18 @@ function audit_log(?int $user_id, ?int $student_id, string $action, string $deta
         ]);
     } catch (Throwable $e) {}
 }
+
+/**
+ * Turn an exception into words a non-technical person can act on. The technical detail goes to the server log
+ * and the admin "AI log" with a short reference; the screen only gets the reference.
+ * Exceptions thrown on purpose with a readable message (RuntimeException / InvalidArgumentException) are shown as written.
+ */
+function friendly_error(Throwable $e, string $doing = 'saving that'): string {
+    if ($e instanceof RuntimeException || $e instanceof InvalidArgumentException) return $e->getMessage();
+    $ref = strtoupper(substr(bin2hex(random_bytes(3)), 0, 6));
+    error_log("[cb $ref] " . get_class($e) . ': ' . $e->getMessage() . ' @' . basename($e->getFile()) . ':' . $e->getLine());
+    try { global $pdo; if ($pdo) { require_once __DIR__ . '/ai/log.php'; ai_log('error', 'page', "ref $ref while $doing: " . get_class($e) . ': ' . $e->getMessage() . ' @' . basename($e->getFile()) . ':' . $e->getLine()); } } catch (Throwable $x) {}
+    return "Something went wrong while $doing. Nothing was lost; please try again. If it keeps happening, tell the technical support person and quote reference $ref.";
+}
+
+require_once __DIR__ . '/booking_state.php';

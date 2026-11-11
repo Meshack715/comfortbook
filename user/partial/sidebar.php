@@ -12,7 +12,7 @@ function nav_active(array $pages, string $current): string {
     return in_array($current, $pages, true) ? 'active' : '';
 }
 ?>
-<div id="layoutSidenav_nav">
+<div id="layoutSidenav_nav" class="d-none d-lg-block">
     <nav class="sb-sidenav accordion sb-sidenav-dark" id="sidenavAccordion">
         <div class="sb-sidenav-menu">
             <div class="nav">
@@ -29,6 +29,11 @@ function nav_active(array $pages, string $current): string {
                    href="<?= $root ?>/user/dashboard.php">
                     <div class="sb-nav-link-icon"><i class="fas fa-tachometer-alt"></i></div>
                     Dashboard
+                </a>
+                <a class="nav-link <?= $current === 'map3d.php' ? 'active' : '' ?>"
+                   href="<?= $root ?>/user/map3d.php">
+                    <div class="sb-nav-link-icon"><i class="fas fa-cube"></i></div>
+                    Hostel in 3D
                 </a>
 
                 <?php if ($isAdmin): ?>
@@ -73,6 +78,12 @@ function nav_active(array $pages, string $current): string {
                         </a>
                     </nav>
                 </div>
+
+                <a class="nav-link <?= $current === 'layout_studio.php' ? 'active' : '' ?>"
+                   href="<?= $root ?>/user/layout_studio.php">
+                    <div class="sb-nav-link-icon"><i class="fas fa-drafting-compass"></i></div>
+                    Layout Studio
+                </a>
 
                 <div class="sb-sidenav-menu-heading">Administration</div>
                 <a class="nav-link <?= nav_active(['students.php','student_form.php','student_import.php'], $current) ?>"
@@ -128,6 +139,11 @@ function nav_active(array $pages, string $current): string {
                 <?php endif; ?>
 
                 <?php if ($isDean): ?>
+                <a class="nav-link <?= $current === 'layout_studio.php' ? 'active' : '' ?>"
+                   href="<?= $root ?>/user/layout_studio.php">
+                    <div class="sb-nav-link-icon"><i class="fas fa-drafting-compass"></i></div>
+                    Layout Studio
+                </a>
                 <div class="sb-sidenav-menu-heading">Booking</div>
                 <a class="nav-link <?= $current === 'phase_windows.php' ? 'active' : '' ?>"
                    href="<?= $root ?>/user/phase_windows.php">
@@ -180,6 +196,13 @@ function nav_active(array $pages, string $current): string {
                 <?php endif; ?>
 
                 <div class="sb-sidenav-menu-heading">System</div>
+                <?php if ($isAdmin): ?>
+                <a class="nav-link <?= $current === 'ai_settings.php' ? 'active' : '' ?>"
+                   href="<?= $root ?>/user/ai_settings.php">
+                    <div class="sb-nav-link-icon"><i class="fas fa-wand-magic-sparkles"></i></div>
+                    AI &amp; payments
+                </a>
+                <?php endif; ?>
                 <a class="nav-link <?= $current === 'downloads.php' ? 'active' : '' ?>"
                    href="<?= $root ?>/user/downloads.php">
                     <div class="sb-nav-link-icon"><i class="fas fa-download"></i></div>

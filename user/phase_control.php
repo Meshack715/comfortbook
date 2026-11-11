@@ -45,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['flash'] = ['type'=>'success','msg'=>"Created $name."];
             } catch (Throwable $e) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
-                $_SESSION['flash'] = ['type'=>'danger','msg'=>'Could not create: '.$e->getMessage()];
+                $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'creating that')];
             }
         } else {
             $_SESSION['flash'] = ['type'=>'danger','msg'=>implode(' ', $errors)];
@@ -120,7 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ];
                 } catch (Throwable $e) {
                     $pdo->rollBack();
-                    $_SESSION['flash'] = ['type'=>'danger','msg'=>'Activate failed: '.$e->getMessage()];
+                    $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'activate')];
                 }
             }
         }
@@ -157,7 +157,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['flash'] = ['type'=>'success','msg'=>'Demo reset for active semester.'];
         } catch (Throwable $e) {
             $pdo->rollBack();
-            $_SESSION['flash'] = ['type'=>'danger','msg'=>'Reset failed: '.$e->getMessage()];
+            $_SESSION['flash'] = ['type'=>'danger','msg'=>friendly_error($e, 'reset')];
         }
         redirect(APP_BASE.'/user/phase_control.php');
     }
@@ -247,10 +247,10 @@ function phase_badge(?int $p): string {
 }
 ?>
 <?php include __DIR__ . '/partial/header.php'; ?>
-<div id="layoutSidenav">
+<div id="layoutSidenav" class="d-lg-flex">
     <?php include __DIR__ . '/partial/sidebar.php'; ?>
-    <div id="layoutSidenav_content">
-        <main class="container-fluid px-4">
+    <div id="layoutSidenav_content" class="col-lg-9 col-xl-10">
+        <main class="container-fluid px-3 px-lg-4 pb-5 pb-lg-0">
 
             <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-3">
                 <div>
