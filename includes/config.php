@@ -9,8 +9,8 @@ date_default_timezone_set('Africa/Nairobi');
 // ---- DATABASE ----
 $DB_HOST = 'localhost';
 $DB_NAME = 'comfortbook_db';
-$DB_USER = 'comfortbook_db';
-$DB_PASS = 'jLbSB7KB8aFcNS3L';
+$DB_USER = 'root';
+$DB_PASS = '';
 
 $options = [
     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
