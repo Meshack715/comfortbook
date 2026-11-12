@@ -33,12 +33,12 @@ if (is_file(__DIR__ . '/config.local.php')) require __DIR__ . '/config.local.php
 
 // ---- SMTP (Brevo) ----
 foreach ([
-    'SMTP_HOST'       => 'smtp-relay.brevo.com',
-    'SMTP_USERNAME'   => '97b8dc001@smtp-brevo.com',
-    'SMTP_PASSWORD'   => 'TjpsE6mtCfkJ9d5I',
-    'SMTP_PORT'       => 587,
-    'SMTP_FROM_EMAIL' => 'pantherzulu7@gmail.com',
-    'SMTP_FROM_NAME'  => 'ComfortBook — UEAB Hostel',
+    'SMTP_HOST'       => '',
+    'SMTP_USERNAME'   => '',
+    'SMTP_PASSWORD'   => '',
+    'SMTP_PORT'       => ,
+    'SMTP_FROM_EMAIL' => '',
+    'SMTP_FROM_NAME'  => '',
 ] as $k => $v) {
     if (!defined($k)) define($k, $v);
 }
